@@ -784,7 +784,10 @@ void loop() {
   if (in_breath) {
     vc = V_TIDAL_ML * (cmd - corrected_centre_dac) / stroke_amp_dac;
     vp = V_TIDAL_ML * (feedback_dac - corrected_centre_dac) / stroke_amp_dac;
-    if (tick == breath_start) vol_meas = vol_seed = vp;   // same zero as vol_pot_ml
+    // Breath start: seed from the pot so both traces share centre as zero.
+    // While the piston moves, the 3-point median returns the previous sample's
+    // pot reading, so vp is one sample old and this tick's flow is still added.
+    if (tick == breath_start) vol_meas = vol_seed = vp;
     if (isnan(flow)) flow_bad = true;   // no gap is bridged
     vol_meas = flow_bad ? NAN : vol_meas + flow * 1000.0f / 60.0f * dticks / SAMPLE_HZ;
     vm = vol_meas;
