@@ -1,5 +1,5 @@
 /*
-  B2_timer_dac.ino  (breakout B2, run before MechLung_NoLogger)
+  B2_timer_dac.ino  (breakout B2, run before MechLung_LeakTest)
 
   Disconnect the Jrk input from A0 first, so the test waveform cannot move
   the piston.

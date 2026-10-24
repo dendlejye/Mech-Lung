@@ -1,5 +1,5 @@
 /*
-  MechLung_NoLogger.ino
+  MechLung_LeakTest.ino
 
   Runs the actuator breathing profile, the SFM3000 flow sensor and seven
   SDP811 pressure sensors together, and checks the volume delivered each
@@ -686,7 +686,7 @@ void setup() {
   initPresets();
   analogWrite(A0, corrected_centre_dac);   // opens and starts the DAC once, at centre
   cmd_f = filt1 = filt2 = corrected_centre_dac;
-  Serial.println("# MechLung_NoLogger: 1 2 3 4 s max min H p");
+  Serial.println("# MechLung_LeakTest: 1 2 3 4 s max min H p");
 
   Wire.begin();
   Wire.setClock(WIRE_CLOCK_HZ);

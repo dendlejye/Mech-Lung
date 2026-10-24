@@ -1,5 +1,5 @@
 /*
-  B3_plotter.ino  (breakout B3, run before MechLung_NoLogger)
+  B3_plotter.ino  (breakout B3, run before MechLung_LeakTest)
 
   Prints name:value rows at 2.5 rows per second (the PLOT_DIV = 40 rate):
     ramp     counts up by 1 each row
@@ -12,7 +12,7 @@
     1. Points the window holds: the ramp's span on screen (last value minus
        first value + 1). 50 is expected (Arduino IDE issue 803).
     2. How nan draws on with_nan: a gap, a drop to zero, or skipped.
-  If the window is not 50 points, set PLOT_DIV in MechLung_NoLogger.ino to
+  If the window is not 50 points, set PLOT_DIV in MechLung_LeakTest.ino to
   1980 / points, rounded up.
 */
 unsigned long row = 0;

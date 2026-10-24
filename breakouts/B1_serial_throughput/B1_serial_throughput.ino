@@ -1,7 +1,7 @@
 /*
-  B1_serial_throughput.ino  (breakout B1, run before MechLung_NoLogger)
+  B1_serial_throughput.ino  (breakout B1, run before MechLung_LeakTest)
 
-  Prints fixed-length rows the size of the longest MechLung_NoLogger line
+  Prints fixed-length rows the size of the longest MechLung_LeakTest line
   (the # breath line, 203 bytes with CR LF) at 100 Hz, each with a sequence
   number, and toggles pin D2 high for the duration of each print.
 
@@ -12,7 +12,7 @@
          python b1_reader.py <port> <baud>
        It counts sequence gaps for 10 minutes.
   Pass: no gaps, and print time + 3 to 4 ms sensor burst under 10 ms.
-  The fastest passing baud becomes SERIAL_BAUD in MechLung_NoLogger.ino.
+  The fastest passing baud becomes SERIAL_BAUD in MechLung_LeakTest.ino.
   If none passes, that sketch needs the RAM transmit queue (plan step 8).
 */
 const unsigned long SERIAL_BAUD = 115200;
