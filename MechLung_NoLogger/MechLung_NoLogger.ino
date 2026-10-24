@@ -34,6 +34,8 @@
     4  command_dac, feedback_dac (also shown during the demo sine)
     Flow and pressures are means over the row, volumes the latest value.
     Volume and gap channels print 0 outside breathing. A failed read prints nan.
+    vol_measured_ml starts each breath at vol_pot_ml, so both measure from centre
+    even when piston lag leaves the piston off centre at phase 0.
 
   Lines starting with # are comments: start-up checks, tare, mode changes,
   "# breath" once per breath, "# breath aborted", the first read failure of
@@ -176,7 +178,7 @@ float tare_sum[8], tare_n[8];
 bool in_breath = false;
 bool flow_bad = false;
 uint32_t last_breath = 0, breath_start = 0;
-float vol_meas = 0, pk_pot, pk_meas, pk_flow, t_pot, t_meas, p_pk[7];
+float vol_meas = 0, vol_seed = 0, pk_pot, pk_meas, pk_flow, t_pot, t_meas, p_pk[7];
 
 // Output state.
 int plot_set = 1;
@@ -661,7 +663,7 @@ void printBreath() {
                                   "shortfall_ml", "peak_flow_Lmin", "p1", "p2", "p3", "p4", "p5", "p6", "p7", "net_ml"};
   float leak = pk_pot - pk_meas;
   float v[15] = {V_TIDAL_ML - pk_pot, leak, 100.0f * leak / pk_pot, t_pot, t_meas,
-                 V_TIDAL_ML - pk_meas, pk_flow, p_pk[0], p_pk[1], p_pk[2], p_pk[3], p_pk[4], p_pk[5], p_pk[6], vol_meas};
+                 V_TIDAL_ML - pk_meas, pk_flow, p_pk[0], p_pk[1], p_pk[2], p_pk[3], p_pk[4], p_pk[5], p_pk[6], vol_meas - vol_seed};
   Line &L = newLine();
   L.print("# breath");
   for (int i = 0; i < 15; i++) {
@@ -782,6 +784,7 @@ void loop() {
   if (in_breath) {
     vc = V_TIDAL_ML * (cmd - corrected_centre_dac) / stroke_amp_dac;
     vp = V_TIDAL_ML * (feedback_dac - corrected_centre_dac) / stroke_amp_dac;
+    if (tick == breath_start) vol_meas = vol_seed = vp;   // same zero as vol_pot_ml
     if (isnan(flow)) flow_bad = true;   // no gap is bridged
     vol_meas = flow_bad ? NAN : vol_meas + flow * 1000.0f / 60.0f * dticks / SAMPLE_HZ;
     vm = vol_meas;

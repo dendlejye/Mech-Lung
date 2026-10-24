@@ -23,7 +23,22 @@ Each sketch's header comment says how to run it and what passes.
 
 ## Status
 
-Not yet compiled for the R4 or run on hardware. Known open issue: the per-breath
-leak figure reads high on every breath after the first, because piston lag leaves
-the piston off centre at phase 0 while `vol_measured_ml` resets to 0 there.
-The first breath from idle is unaffected.
+Not yet compiled for the R4 or run on hardware. Checked on a PC against a
+simulated rig only.
+
+## Volume traces
+
+- `vol_pot_ml`: piston position from the pot, as volume from centre.
+- `vol_measured_ml`: flow sensor integrated over the breath. It starts each breath
+  at `vol_pot_ml`, not 0, so both traces measure from centre.
+
+Piston lag (5 Hz filter plus Jrk and actuator) leaves the piston off centre when
+the command reaches phase 0. Starting `vol_measured_ml` at 0 there made the leak
+read high on every breath after the first, and more at higher flow (simulated:
+37 mL read for a true 14 mL at 30 L/min with 150 ms lag). With the seed the
+simulated leak reads 12 to 17 mL for a true 14 mL at all presets. The remaining
+spread is about one pot step (1.4 mL).
+
+Cost: `vol_measured_ml` includes one pot reading at breath start, so a pot error
+at that sample (about 1.4 mL) goes into the leak figure. `net_ml` subtracts the
+seed, so it is still flow-sensor only.
