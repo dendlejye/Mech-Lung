@@ -29,7 +29,7 @@ Each sketch's header comment says how to run it and what passes.
 
 `leaktest.py` asks for room temperature (C), MSL pressure (hPa, from BoM) and a
 queue such as `4x20, 1x10` (preset x complete breaths). It converts MSL to
-station pressure with `ELEVATION_M = 35` (VU Footscray Park, Building D level 3).
+station pressure with `ELEVATION_M = 27` (VU Footscray Park, Building D level 3: RL 26.1 m plus bench).
 Then, with no further input, for each item it: sends H until idle at centre and
 tared, turns log mode on, starts the preset, counts N complete breaths, sends H,
 waits for centre and turns log mode off. One console line per breath: push leak,
