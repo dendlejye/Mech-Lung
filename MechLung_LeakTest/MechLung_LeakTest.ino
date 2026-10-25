@@ -82,7 +82,7 @@ const int DAC_MAX = 4095;             // 12-bit DAC full scale
 // Jrk window, measured with the min / max commands. Measured on this rig: 230 mm.
 // If tidal volume or peak flow measure off on the rig, re-check it first.
 const float ACTUATOR_STROKE_MM = 230.0f;
-const float CYLINDER_DIAMETER_MM = 130.0f;    // bore of the cylinder
+const float CYLINDER_DIAMETER_MM = 129.15f;   // bore of the cylinder, measured with callipers
 const float V_TIDAL_ML = 700.0f;              // volume moved per breath
 const float IE_EXP_PARTS = 2.0f;              // expiration : inspiration time ratio
 const float IE_INSP_PARTS = 1.0f;
