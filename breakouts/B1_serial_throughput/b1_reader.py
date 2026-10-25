@@ -15,7 +15,14 @@ ser.readline()                         # drop a partial first line
 last = None
 rows = gaps = lost = bad = 0
 t0 = time.time()
+next_report = t0 + 60
 while time.time() - t0 < DURATION_S:
+    if rows == 0 and bad == 0 and time.time() - t0 > 10:
+        print(f"nothing received on {port} in 10 s: wrong port, B1 not uploaded, or the baud differs from the sketch")
+        sys.exit(1)
+    if time.time() > next_report:
+        next_report += 60
+        print(f"  {time.time() - t0:.0f} s: {rows} rows, {gaps} gaps, {bad} malformed")
     line = ser.readline().decode("ascii", "replace").strip()
     if not line.startswith("seq:"):
         bad += 1 if line else 0
