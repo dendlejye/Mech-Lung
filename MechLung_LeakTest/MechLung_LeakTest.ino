@@ -23,6 +23,7 @@
     max min  go to that end of the calibrated Jrk window and hold
     H        stop: return to centre at RAMP_RATE_DAC_PER_S. Tares if already idle.
     p        cycle plot set
+    L        log mode on / off (for leaktest.py)
     A start key while breathing or in the demo ramps to centre first, then
     starts. While returning to centre start keys are refused; at max or min
     send H first.
@@ -40,6 +41,15 @@
   Lines starting with # are comments: start-up checks, tare, mode changes,
   "# breath" once per breath, "# breath aborted", the first read failure of
   each sensor, and "# status" once per second.
+
+  Log mode (key L, needs SERIAL_BAUD >= LOG_MIN_BAUD)
+    L prints "# config ..." (the constants needed to convert the raw values)
+    and "# log on", then one CSV row per 100 Hz sample tick:
+      tick,breath,mode,cmd_dac,pot_raw,sfm_raw,p1_raw,...,p7_raw
+    Raw integers as the sensors returned them, untared. A failed read is an
+    empty field; sensor fields are empty in the demo. No plot rows, # status
+    or # breath lines: they are worked out from the rows. Short event lines
+    are sent after a row only if they fit in the tick. L again: "# log off".
 
   Travel limits are set inside the Jrk, not here. Set them before the first run.
 */
@@ -83,7 +93,9 @@ const int DAC_UPDATE_HZ = 1000;       // timer rate: DAC written every 1 ms
 const int SAMPLE_HZ = 100;            // sensor sample rate, must divide DAC_UPDATE_HZ
 const int TICKS_PER_SAMPLE = DAC_UPDATE_HZ / SAMPLE_HZ;
 const uint8_t TIMER_PRIORITY = 4;     // above I2C, USB, serial (12) and millis (8)
-const int PLOT_DIV = 40;              // sample ticks per plot row (2.5 rows/s)
+const int PLOT_DIV = 40;
+const unsigned long LOG_MIN_BAUD = 230400; // a log row plus the sensor burst fits 10 ms
+const unsigned long TICK_BUDGET_US = 1000000UL / SAMPLE_HZ - 1500;  // Serial time allowed per tick              // sample ticks per plot row (2.5 rows/s)
 const unsigned long SERIAL_BAUD = 115200;  // set from breakout sketch B1
 const float DEMO_SINE_PERIOD_US = 20.0e6f; // 20 s per demo sweep
 const int DEMO_SINE_MARGIN_JRK = 0;        // stay this far from the Jrk window ends
@@ -182,6 +194,10 @@ float vol_meas = 0, vol_seed = 0, pk_pot, pk_meas, pk_flow, t_pot, t_meas, p_pk[
 
 // Output state.
 int plot_set = 1;
+bool log_mode = false, log_requested = false;   // log mode starts once "# log on" is sent
+uint16_t sfm_raw = 0;          // last raw SFM3000 word
+int16_t sdp_raw[7];            // last raw SDP811 pressure words
+int16_t sdp_scale = 0;         // last SDP811 scale factor (counts per Pa)
 float sum_flow = 0, sum_p[7], n_sum = 0;
 uint32_t last_tick = 0, last_row = 0, last_status = 0;
 unsigned long dropped_ticks = 0, skipped_rows = 0, max_loop_us = 0;
@@ -216,6 +232,36 @@ void sendOneLine() {
   Serial.println();
   q_head = (q_head + 1) % QUEUE_LEN;
   q_count--;
+}
+
+// Log mode: one CSV row of raw values, sent at once. Empty field = failed read.
+void sendLogRow(uint32_t tick, uint32_t breath, int m, float cmd, float raw[8]) {
+  static Line row;
+  row.n = 0;
+  row.print(tick);
+  row.print(',');
+  row.print(breath);
+  row.print(',');
+  row.print(m);
+  row.print(',');
+  row.print((int)(cmd + 0.5f));
+  row.print(',');
+  row.print(pot_raw);
+  row.print(',');
+  if (!isnan(raw[0])) row.print(sfm_raw);
+  for (int i = 0; i < 7; i++) {
+    row.print(',');
+    if (!isnan(raw[i + 1])) row.print(sdp_raw[i]);
+  }
+  Serial.write(row.s, row.n);
+  Serial.println();
+}
+
+// Log mode: send the next queued line only if it fits in the rest of this tick.
+void sendLineIfFits(unsigned long t0) {
+  if (q_count == 0) return;
+  unsigned long line_us = (queue_lines[q_head].n + 2) * 10000000UL / SERIAL_BAUD;
+  if (micros() - t0 + line_us <= TICK_BUDGET_US) sendOneLine();
 }
 
 // ---- Actuator (from actuator_breathing.ino) ----
@@ -400,12 +446,55 @@ void goToExtreme(bool is_max) {
   say(is_max ? "# moving to max" : "# moving to min");
 }
 
+// The constants leaktest.py needs to convert the raw log values.
+void printConfig() {
+  Line &L = newLine();
+  L.print("# config centre_dac=");
+  L.print(corrected_centre_dac);
+  L.print(" stroke_amp_dac=");
+  L.print(stroke_amp_dac, 3);
+  L.print(" v_tidal_ml=");
+  L.print(V_TIDAL_ML, 1);
+  L.print(" pot_raw_at_centre=");
+  L.print(POT_RAW_AT_CENTRE, 2);
+  L.print(" pot_dac_per_adc=");
+  L.print(POT_DAC_COUNTS_PER_ADC, 4);
+  L.print(" sfm_offset=");
+  L.print(SFM3000_OFFSET, 0);
+  L.print(" sfm_scale=");
+  L.print(SFM3000_SCALE, 0);
+  L.print(" sdp_scale=");
+  L.print(sdp_scale);
+  L.print(" flow_sign=");
+  L.print(FLOW_SIGN, 0);
+  L.print(" sample_hz=");
+  L.print(SAMPLE_HZ);
+  L.print(" period_ms=");
+  for (int i = 0; i < 4; i++) {
+    if (i > 0) L.print(',');
+    L.print((unsigned long)(preset_period_us[i] / 1000.0f + 0.5f));
+  }
+}
+
 void handleKey(char key) {
   int m = current_preset;
   bool is_start = (key >= '1' && key <= '4') || key == 's';
 
+  if (key == 'l') {
+    if (log_mode || log_requested) {
+      log_mode = log_requested = false;
+      say("# log off");
+    } else if (SERIAL_BAUD < LOG_MIN_BAUD) {
+      say("# log mode needs SERIAL_BAUD >= 230400");
+    } else {
+      printConfig();
+      say("# log on");
+      log_requested = true;
+    }
+    return;
+  }
   if (key == 'p') {
-    if (m != MODE_DEMO) plot_set = plot_set % 4 + 1;
+    if (m != MODE_DEMO && !log_mode) plot_set = plot_set % 4 + 1;
     return;
   }
   if (key != 'h' && !is_start) return;
@@ -513,6 +602,7 @@ float readFlow() {
   uint8_t crc = Wire.read();
   if (crc8_sfm(hi, lo) != crc) return NAN;
   uint16_t raw = ((uint16_t)hi << 8) | lo;
+  sfm_raw = raw;
   return constrain(((float)raw - SFM3000_OFFSET) / SFM3000_SCALE, -SFM3000_MAX_SLM, SFM3000_MAX_SLM);
 }
 
@@ -539,9 +629,9 @@ void sdpStop() {
   Wire1.endTransmission();
 }
 
-// Read the SDP811 on the selected mux channel, in Pa, or NAN on a failed read.
+// Read the SDP811 on mux channel ch (already selected), in Pa, or NAN on a failed read.
 // 9 bytes: pressure, temperature and scale factor, each 2 bytes + CRC.
-float readPressure() {
+float readPressure(int ch) {
   if (Wire1.requestFrom((uint8_t)SDP_ADDR, (uint8_t)9) < 9) {
     while (Wire1.available()) Wire1.read();   // empty the buffer after a short read
     return NAN;
@@ -554,6 +644,8 @@ float readPressure() {
   int16_t raw_pressure = (int16_t)(((uint16_t)b[0] << 8) | b[1]);
   int16_t raw_scale = (int16_t)(((uint16_t)b[6] << 8) | b[7]);
   if (raw_scale <= 0) return NAN;
+  sdp_raw[ch] = raw_pressure;
+  sdp_scale = raw_scale;
   return (float)raw_pressure / (float)raw_scale;
 }
 
@@ -602,7 +694,7 @@ void readSensors(float raw[8], uint32_t tick) {
       bus_ok = false;
       mux_err++;
     }
-    if (bus_ok) raw[ch + 1] = readPressure();
+    if (bus_ok) raw[ch + 1] = readPressure(ch);
     ok = !isnan(raw[ch + 1]);
     if (sdp_blank[ch] > 0) {
       sdp_blank[ch]--;
@@ -686,7 +778,7 @@ void setup() {
   initPresets();
   analogWrite(A0, corrected_centre_dac);   // opens and starts the DAC once, at centre
   cmd_f = filt1 = filt2 = corrected_centre_dac;
-  Serial.println("# MechLung_LeakTest: 1 2 3 4 s max min H p");
+  Serial.println("# MechLung_LeakTest: 1 2 3 4 s max min H p L");
 
   Wire.begin();
   Wire.setClock(WIRE_CLOCK_HZ);
@@ -752,6 +844,10 @@ void loop() {
   if (tick == last_tick) return;
 
   unsigned long t0 = micros();
+  if (log_requested && q_count == 0) {   // "# log on" has gone out: rows start now
+    log_requested = false;
+    log_mode = true;
+  }
   uint32_t dticks = tick - last_tick;
   dropped_ticks += dticks - 1;
   last_tick = tick;
@@ -770,7 +866,7 @@ void loop() {
   if (m < 0) in_breath = false;
   if (breath != last_breath) {
     last_breath = breath;
-    if (in_breath) printBreath();
+    if (in_breath && !log_mode) printBreath();
     in_breath = (m >= 0);
     breath_start = tick;
     flow_bad = false;
@@ -798,6 +894,12 @@ void loop() {
       pk_flow = flow;
       for (int i = 0; i < 7; i++) p_pk[i] = p[i];
     }
+  }
+
+  if (log_mode) {
+    sendLogRow(tick, breath, m, cmd, raw);
+    sendLineIfFits(t0);
+    return;
   }
 
   // Plot row every PLOT_DIV sample ticks.

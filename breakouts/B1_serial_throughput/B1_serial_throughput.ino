@@ -1,22 +1,24 @@
 /*
   B1_serial_throughput.ino  (breakout B1, run before MechLung_LeakTest)
 
-  Prints fixed-length rows the size of the longest MechLung_LeakTest line
-  (the # breath line, 203 bytes with CR LF) at 100 Hz, each with a sequence
-  number, and toggles pin D2 high for the duration of each print.
+  Prints fixed-length rows at 100 Hz, each with a sequence number, and
+  toggles pin D2 high for the duration of each print. LINE_BYTES sets the
+  length: 68 = a MechLung_LeakTest log row (log mode, the one that matters),
+  203 = the longest plot-mode line (# breath).
 
-  How to run, once per baud: 115200, 230400, 460800, 921600
+  How to run, once per baud: 230400, 460800, 921600 (and 115200 for plot mode)
     1. Set SERIAL_BAUD below. Board: Arduino UNO R4 WiFi. Upload.
     2. Scope D2: the high time is the print time.
     3. Close the Arduino Serial Monitor, then run on the PC:
          python b1_reader.py <port> <baud>
        It counts sequence gaps for 10 minutes.
-  Pass: no gaps, and print time + 3 to 4 ms sensor burst under 10 ms.
-  The fastest passing baud becomes SERIAL_BAUD in MechLung_LeakTest.ino.
-  If none passes, that sketch needs the RAM transmit queue (plan step 8).
+  Pass (LINE_BYTES = 68): no gaps, and print time + 3 to 4 ms sensor burst
+  + 1.5 ms for a short event line under 10 ms. The fastest passing baud of
+  at least 230400 becomes SERIAL_BAUD in MechLung_LeakTest.ino and BAUD in
+  logger/leaktest.py. If none passes, log mode cannot run at 100 Hz.
 */
 const unsigned long SERIAL_BAUD = 115200;
-const int LINE_BYTES = 203;                // row length including CR LF
+const int LINE_BYTES = 68;                 // row length including CR LF (68 log row, 203 # breath)
 const unsigned long PERIOD_US = 10000;     // 100 Hz
 const int PRINT_PIN = 2;
 

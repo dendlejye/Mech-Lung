@@ -1,3 +1,5 @@
 __pycache__/
 *.pyc
 build/
+logger/runs/
+logger/last_conditions.json
