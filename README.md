@@ -36,7 +36,7 @@ waits for centre and turns log mode off. One console line per breath: push leak,
 return leak, leak %, lost rows, failed reads. Ctrl+C stops the actuator, saves
 and marks the run aborted.
 
-Each item is saved in `logger/runs/<date>_<time>_p<preset>x<N>/`:
+Each item is saved in `logger/runs/<date>_<hhmmss>_p<preset>x<N>/`:
 
 - `samples.csv`: `tick,breath,mode,cmd_dac,pot_raw,sfm_raw,p1_raw..p7_raw`, raw
   untared integers at 100 Hz; an empty field is a failed read, a tick gap a lost row.

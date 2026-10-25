@@ -7,7 +7,7 @@ Needs:            pip install pyserial
 Asks for room temperature, MSL pressure and a queue such as "4x20, 1x10"
 (preset x complete breaths). For each item it tares, turns log mode on,
 runs the preset for N breaths, returns to centre and saves:
-  runs\\<date>_<time>_p<preset>x<N>\\samples.csv   raw log rows
+  runs\\<date>_<hhmmss>_p<preset>x<N>\\samples.csv   raw log rows
                                      events.log    # lines, after the tick they followed
                                      meta.json     conditions, constants, tare, per-breath figures
 Prints one line per breath. Ctrl+C stops the actuator, saves what it has and
@@ -27,6 +27,7 @@ import serial.tools.list_ports
 
 BAUD = 230400          # must match SERIAL_BAUD in the sketch
 ELEVATION_M = 35       # VU Footscray Park, Building D level 3 (25 m ground + 10 m)
+ROW_TIMEOUT_S = 2      # log rows normally arrive every 10 ms
 HERE = Path(__file__).parent
 LAST = HERE / "last_conditions.json"
 HEADER = "tick,breath,mode,cmd_dac,pot_raw,sfm_raw," + ",".join(f"p{i}_raw" for i in range(1, 8))
@@ -175,7 +176,7 @@ class Breaths:
         ret = nan if b["flow_bad"] else (b["pk_pot"] - b["vp"]) - (b["pk_meas"] - b["vm"])
         net = nan if b["flow_bad"] else b["vm"] - b["seed"]
         out = dict(breath=b["breath"], push_leak_ml=push, return_leak_ml=ret,
-                   net_ml=net, push_leak_pct=100 * push / b["pk_pot"],
+                   net_ml=net, push_leak_pct=100 * push / b["pk_pot"] if b["pk_pot"] > 0 else nan,
                    lost_rows=b["lost"], failed_reads=b["failed"])
         self.done.append(out)
         return out
@@ -195,10 +196,18 @@ def run_item(rig, preset, n, cond):
         b0 = None
         rig.send(str(preset))
         print(f"preset {preset}: running {n} breaths")
+        # Stop if rows stop arriving, or the breaths take far longer than they should.
+        deadline = time.time() + n * cfg["period_ms"][preset - 1] / 1000 + 30
+        last_row = time.time()
         while True:
+            if time.time() > deadline:
+                raise TimeoutError(f"{n} breaths not complete by the expected time")
+            if time.time() - last_row > ROW_TIMEOUT_S:
+                raise TimeoutError(f"no log rows for {ROW_TIMEOUT_S} s")
             ln = rig.line()
             if not ln or not ln[0].isdigit():
                 continue
+            last_row = time.time()
             f = ln.split(",")
             if b0 is None and int(f[2]) == preset - 1:
                 b0 = int(f[1])
@@ -214,15 +223,18 @@ def run_item(rig, preset, n, cond):
         rig.wait_for("# centre", 30)
         rig.recording = False
         rig.log(False)
-    except (KeyboardInterrupt, TimeoutError, RuntimeError) as e:
+    except BaseException as e:          # any failure: stop the actuator and save first
         meta["aborted"] = True
         meta["error"] = repr(e)
-        rig.send("h")
         rig.recording = False
-        if rig.log_on:
-            rig.send("l")
-            rig.log_on = False
-        print(f"aborted ({e!r}): actuator returning to centre, saving what was recorded")
+        try:                            # the port itself may be the failure
+            rig.send("h")
+            if rig.log_on:
+                rig.send("l")
+                rig.log_on = False
+        except Exception as e2:
+            print(f"could not send H ({e2!r}): stop the actuator by hand")
+        print(f"aborted ({e!r}): saving what was recorded")
     meta["end"] = datetime.now().isoformat(timespec="seconds")
     meta["rows"] = len(rig.rows)
     meta["breaths"] = an.done if an else []
@@ -231,7 +243,7 @@ def run_item(rig, preset, n, cond):
 
 
 def save(start, preset, n, meta, rig):
-    folder = HERE / "runs" / f"{start:%Y-%m-%d_%H%M}_p{preset}x{n}"
+    folder = HERE / "runs" / f"{start:%Y-%m-%d_%H%M%S}_p{preset}x{n}"
     folder.mkdir(parents=True, exist_ok=True)
     (folder / "samples.csv").write_text(HEADER + "\n" + "\n".join(rig.rows) + "\n")
     (folder / "events.log").write_text("tick,line\n" + "\n".join(rig.events) + "\n")
