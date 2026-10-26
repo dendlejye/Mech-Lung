@@ -144,6 +144,14 @@ const uint32_t WIRE_CLOCK_HZ = 400000;   // never 200000: this core keeps the ol
 const uint32_t WIRE1_CLOCK_HZ = 400000;
 const unsigned int I2C_TIMEOUT_US = 1000;
 const int SENSOR_FAIL_TICKS = 5;         // consecutive failures before a restart
+// Flow averaging: read the SFM3000 about every 1 ms through the tick (in the
+// idle time and between the SDP811 reads) and report the mean, so flow
+// fluctuations faster than 50 Hz (e.g. the Jrk's 100 Hz update) average out
+// instead of aliasing. The mean covers the 10 ms before the tick (about 5 ms
+// behind the pot sample). Any failed read in the window makes the tick nan.
+// false: one point sample per tick, as before.
+const bool FLOW_AVG = true;
+const unsigned long FLOW_AVG_US = 1000;
 
 // Modes held in current_preset (0 to 3 are the breathing presets).
 const int MODE_IDLE = -1;
@@ -189,6 +197,10 @@ int fail_run[8];
 bool fail_reported[8];
 uint32_t last_restart[8];
 bool sfm_discard = false;      // next good SFM3000 read is the invalid first one
+long sfm_sum = 0;              // flow averaging: sum and count of raw words this tick
+int sfm_n = 0;
+bool sfm_bad = false;          // a read in this tick's window failed
+unsigned long sfm_last_us = 0;
 int sdp_blank[7];              // reads still blanked after an SDP811 restart
 unsigned long mux_err = 0;
 float tare[8];                 // flow in slm, pressures in Pa
@@ -482,6 +494,8 @@ void printConfig() {
   L.print(FLOW_SIGN, 0);
   L.print(" sample_hz=");
   L.print(SAMPLE_HZ);
+  L.print(" flow_avg=");
+  L.print(FLOW_AVG ? 1 : 0);
   L.print(" period_ms=");
   for (int i = 0; i < 4; i++) {
     if (i > 0) L.print(',');
@@ -691,18 +705,48 @@ void sensorResult(int s, bool ok, uint32_t tick, bool bus_ok) {
 }
 
 // Read the SFM3000, then p1 to p7, into raw[] (slm, Pa). Failed reads are NAN.
+// Flow averaging: one extra SFM3000 read if 1 ms has passed. Skipped while the
+// sensor is failing or restarting, so a dead sensor cannot eat the tick.
+void sfmSample() {
+  if (!FLOW_AVG || sfm_discard || fail_run[0] > 0) return;
+  if (micros() - sfm_last_us < FLOW_AVG_US) return;
+  sfm_last_us = micros();
+  if (isnan(readFlow())) {
+    sfm_bad = true;
+  } else {
+    sfm_sum += sfm_raw;
+    sfm_n++;
+  }
+}
+
 void readSensors(float raw[8], uint32_t tick) {
+  // The SFM3000 NACKs a read with no new result (0.5 ms refresh), so leave
+  // 0.6 ms after an averaging read.
+  unsigned long since = micros() - sfm_last_us;
+  if (FLOW_AVG && since < 600) delayMicroseconds(600 - since);
+  sfm_last_us = micros();
   raw[0] = readFlow();
   bool ok = !isnan(raw[0]);
   if (ok && sfm_discard) {
     sfm_discard = false;
     raw[0] = NAN;
   }
+  if (FLOW_AVG && !isnan(raw[0])) {
+    sfm_sum += sfm_raw;
+    sfm_n++;
+    float mean = (float)sfm_sum / sfm_n;
+    sfm_raw = (uint16_t)(mean + 0.5f);
+    raw[0] = sfm_bad ? NAN : constrain((mean - SFM3000_OFFSET) / SFM3000_SCALE, -SFM3000_MAX_SLM, SFM3000_MAX_SLM);
+  }
+  sfm_sum = 0;
+  sfm_n = 0;
+  sfm_bad = false;
   sensorResult(0, ok, tick, true);
 
   bool bus_ok = true;
   for (int ch = 0; ch < 7; ch++) {
     raw[ch + 1] = NAN;
+    sfmSample();                           // flow averaging also covers the burst
     if (bus_ok && !muxWrite(1 << ch)) {   // a failed mux write skips the rest of Wire1
       bus_ok = false;
       mux_err++;
@@ -862,7 +906,10 @@ void loop() {
   if (ev == 1) say("# centre");
   if (ev == 2) say("# at max, H returns to centre");
   if (ev == 3) say("# at min, H returns to centre");
-  if (tick == last_tick) return;
+  if (tick == last_tick) {
+    if (m != MODE_DEMO) sfmSample();   // flow averaging in the idle time
+    return;
+  }
 
   unsigned long t0 = micros();
   if (log_requested && q_count == 0) {   // "# log on" has gone out: rows start now
