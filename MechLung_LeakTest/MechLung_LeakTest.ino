@@ -8,7 +8,7 @@
   Hardware (Arduino UNO R4 WiFi)
     A0     12-bit DAC output -> Jrk G2 analog input
     A1     12-bit ADC input  <- position potentiometer
-    Wire   SFM3000 flow sensor, address 0x40 (pull-ups 4-8k)
+    Wire   SFM3000 flow sensor, address 0x40 (4.7k pull-ups), 100 kHz
     Wire1  Qwiic -> PCA9548 mux 0x70, SDP811 0x26 on channels 0 to 6 (p1 to p7)
 
   How it runs
@@ -140,9 +140,13 @@ const float TARE_STILL_COUNTS = 15.0f;      // DAC counts: pot noise at rest spa
 const uint8_t SFM3000_ADDR = 0x40;
 const uint8_t MUX_ADDR = 0x70;
 const uint8_t SDP_ADDR = 0x26;
-const uint32_t WIRE_CLOCK_HZ = 400000;   // never 200000: this core keeps the old rate
+// Wire (SFM3000) at 100 kHz: at 400 kHz with 4 reads per tick the SFM3000 locked
+// up (27 Oct 2026; after a board reset it NACKed its address until power cycled).
+// This core only honours 100000, 400000 and 1000000.
+const uint32_t WIRE_CLOCK_HZ = 100000;
 const uint32_t WIRE1_CLOCK_HZ = 400000;
-const unsigned int I2C_TIMEOUT_US = 1000;
+const unsigned int WIRE_TIMEOUT_US = 3000;   // a 3-byte read takes about 0.4 ms at 100 kHz
+const unsigned int WIRE1_TIMEOUT_US = 1000;
 const int SENSOR_FAIL_TICKS = 5;         // consecutive failures before a restart
 // Flow averaging: FLOW_AVG_READS evenly spaced SFM3000 reads per tick, reported
 // as their mean. The tick's own read is the last; the extra reads fall at
@@ -865,10 +869,10 @@ void setup() {
 
   Wire.begin();
   Wire.setClock(WIRE_CLOCK_HZ);
-  Wire.setWireTimeout(I2C_TIMEOUT_US);
+  Wire.setWireTimeout(WIRE_TIMEOUT_US);
   Wire1.begin();
   Wire1.setClock(WIRE1_CLOCK_HZ);
-  Wire1.setWireTimeout(I2C_TIMEOUT_US);
+  Wire1.setWireTimeout(WIRE1_TIMEOUT_US);
 
   uint8_t err = sfmStart();
   sfm_discard = true;
