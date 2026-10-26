@@ -179,6 +179,7 @@ class Breaths:
         b["lost"] += dt - 1
         b["failed"] += sum(1 for x in f[5:] if x == "")
         b["vp"] = vp
+        b["vm_hist"] = (b.get("vm_hist", []) + [b["vm"]])[-3:]   # vm at the time vp refers to
         b["pk_pot"] = max(b["pk_pot"], vp)
         b["pk_meas"] = max(b["pk_meas"], b["vm"])
         return finished
@@ -190,7 +191,8 @@ class Breaths:
         # Return leak: fall of each from its peak to the breath end. Exact even when
         # the piston is not back at centre at phase 0 (first breath from rest).
         push = nan if b["flow_bad"] else b["pk_pot"] - b["pk_meas"]
-        ret = nan if b["flow_bad"] else (b["pk_pot"] - b["vp"]) - (b["pk_meas"] - b["vm"])
+        # vp at breath end is 2 samples old (median), so compare it with vm 2 rows back.
+        ret = nan if b["flow_bad"] else (b["pk_pot"] - b["vp"]) - (b["pk_meas"] - b["vm_hist"][0])
         net = nan if b["flow_bad"] else b["vm"] - b["seed"]
         out = dict(breath=b["breath"], push_leak_ml=push, return_leak_ml=ret,
                    net_ml=net, push_leak_pct=100 * push / b["pk_pot"] if b["pk_pot"] > 0 else nan,
