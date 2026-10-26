@@ -134,7 +134,7 @@ const float SFM3000_MAX_SLM = 200.0f;   // sensor range, used to clamp output
 // average TARE_SAMPLES of flow and of each pressure.
 const int TARE_SAMPLES = 100;
 const unsigned long TARE_SETTLE_MS = 2000;  // PLACEHOLDER: set on the bench from pot noise at rest
-const float TARE_STILL_COUNTS = 5.0f;       // PLACEHOLDER: set on the bench, in DAC counts
+const float TARE_STILL_COUNTS = 15.0f;      // DAC counts: pot noise at rest spans 9 to 11 (rig, 26 Oct 2026)
 
 // I2C.
 const uint8_t SFM3000_ADDR = 0x40;
@@ -150,7 +150,11 @@ const int SENSOR_FAIL_TICKS = 5;         // consecutive failures before a restar
 // instead of aliasing. The mean covers the 10 ms before the tick (about 5 ms
 // behind the pot sample). Any failed read in the window makes the tick nan.
 // false: one point sample per tick, as before.
-const bool FLOW_AVG = true;
+// Off: on its first rig run (26 Oct 2026) the SFM3000 locked up 3 s into
+// preset 1 (every read failed until a power cycle), which it had not done in
+// about an hour of single-sample logging. Its datasheet lists lock-up as a
+// failure mode; the 10x read rate is the suspect.
+const bool FLOW_AVG = false;
 const unsigned long FLOW_AVG_US = 1000;
 
 // Modes held in current_preset (0 to 3 are the breathing presets).
