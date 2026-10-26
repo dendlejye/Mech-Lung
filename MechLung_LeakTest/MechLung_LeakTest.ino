@@ -17,7 +17,7 @@
     Every 10th interrupt is a 100 Hz sample tick: loop() reads the SFM3000,
     p1 to p7 and the pot, updates the volumes and sends at most one line.
 
-  Keys (Serial at SERIAL_BAUD, not case sensitive)
+  Keys (over the PC link, see NATIVE_USB; not case sensitive)
     1 2 3 4  breathe at a peak flow of 10, 15, 20 or 30 L/min
     s        demo sine (actuator only, sensors off)
     max min  go to that end of the calibrated Jrk window and hold
@@ -93,10 +93,24 @@ const int DAC_UPDATE_HZ = 1000;       // timer rate: DAC written every 1 ms
 const int SAMPLE_HZ = 100;            // sensor sample rate, must divide DAC_UPDATE_HZ
 const int TICKS_PER_SAMPLE = DAC_UPDATE_HZ / SAMPLE_HZ;
 const uint8_t TIMER_PRIORITY = 4;     // above I2C, USB, serial (12) and millis (8)
-const int PLOT_DIV = 40;
+const int PLOT_DIV = 40;              // sample ticks per plot row (2.5 rows/s)
 const unsigned long LOG_MIN_BAUD = 230400; // a log row plus the sensor burst fits 10 ms
-const unsigned long TICK_BUDGET_US = 1000000UL / SAMPLE_HZ - 1500;  // Serial time allowed per tick              // sample ticks per plot row (2.5 rows/s)
-const unsigned long SERIAL_BAUD = 115200;  // set from breakout sketch B1
+const unsigned long TICK_BUDGET_US = 1000000UL / SAMPLE_HZ - 1500;  // Serial time allowed per tick
+// PC link. NATIVE_USB 1: the USB-C port is switched to the RA4M1's own USB at
+// boot, bypassing the ESP32-S3 bridge, whose serial output stalls under
+// continuous 100 Hz logging (B1 tests). The baud is then ignored and the
+// board shows up as a new COM port. To upload: double-tap reset, then upload
+// (retry once if it fails). NATIVE_USB 0: Serial through the bridge as before.
+#define NATIVE_USB 1
+#if NATIVE_USB
+#define PC SerialUSB
+const unsigned long SERIAL_BAUD = 12000000; // nominal USB full speed: only sets the line time budget
+void __USBStart();
+void __maybe_start_usb() { __USBStart(); }   // core hook, runs before setup(): switches USB to the RA4M1
+#else
+#define PC Serial
+const unsigned long SERIAL_BAUD = 115200;   // set from breakout sketch B1
+#endif
 const float DEMO_SINE_PERIOD_US = 20.0e6f; // 20 s per demo sweep
 const int DEMO_SINE_MARGIN_JRK = 0;        // stay this far from the Jrk window ends
 
@@ -228,8 +242,8 @@ void say(const char *text) { newLine().print(text); }
 
 void sendOneLine() {
   if (q_count == 0) return;
-  Serial.write(queue_lines[q_head].s, queue_lines[q_head].n);
-  Serial.println();
+  PC.write(queue_lines[q_head].s, queue_lines[q_head].n);
+  PC.println();
   q_head = (q_head + 1) % QUEUE_LEN;
   q_count--;
 }
@@ -253,8 +267,8 @@ void sendLogRow(uint32_t tick, uint32_t breath, int m, float cmd, float raw[8]) 
     row.print(',');
     if (!isnan(raw[i + 1])) row.print(sdp_raw[i]);
   }
-  Serial.write(row.s, row.n);
-  Serial.println();
+  PC.write(row.s, row.n);
+  PC.println();
 }
 
 // Log mode: send the next queued line only if it fits in the rest of this tick.
@@ -544,8 +558,8 @@ void handleKey(char key) {
 
 void readKeys() {
   if (cmd_len > 0 && millis() - cmd_ms > 1000) cmd_len = 0;   // "max"/"min" buffer times out
-  while (Serial.available()) {
-    char key = (char)tolower(Serial.read());
+  while (PC.available()) {
+    char key = (char)tolower(PC.read());
     cmd_ms = millis();
     if (key == '\n' || key == '\r') {
       cmd_len = 0;
@@ -767,7 +781,7 @@ void printBreath() {
 }
 
 void setup() {
-  Serial.begin(SERIAL_BAUD);
+  PC.begin(SERIAL_BAUD);
   delay(2000);
   analogWriteResolution(12);
   analogReadResolution(12);
@@ -778,7 +792,7 @@ void setup() {
   initPresets();
   analogWrite(A0, corrected_centre_dac);   // opens and starts the DAC once, at centre
   cmd_f = filt1 = filt2 = corrected_centre_dac;
-  Serial.println("# MechLung_LeakTest: 1 2 3 4 s max min H p L");
+  PC.println("# MechLung_LeakTest: 1 2 3 4 s max min H p L");
 
   Wire.begin();
   Wire.setClock(WIRE_CLOCK_HZ);
@@ -790,22 +804,22 @@ void setup() {
   uint8_t err = sfmStart();
   sfm_discard = true;
   if (err == 0) {
-    Serial.println("# SFM3000 found");
+    PC.println("# SFM3000 found");
   } else {
-    Serial.print("# SFM3000 not found, I2C error code ");
-    Serial.println(err);
+    PC.print("# SFM3000 not found, I2C error code ");
+    PC.println(err);
   }
   for (int ch = 0; ch < 7; ch++) {
-    Serial.print("# SDP811 p");
-    Serial.print(ch + 1);
+    PC.print("# SDP811 p");
+    PC.print(ch + 1);
     if (!muxWrite(1 << ch)) {
-      Serial.println(": multiplexer channel not found");
+      PC.println(": multiplexer channel not found");
       continue;
     }
     delay(20);
     sdpStop();      // in case a previous run left the sensor measuring
     delay(1);
-    Serial.println(sdpStart() ? " found" : " not found");
+    PC.println(sdpStart() ? " found" : " not found");
     delay(25);
   }
   muxWrite(0);
@@ -818,10 +832,10 @@ void setup() {
             && dac_timer.open()
             && dac_timer.start();
   if (ok) {
-    Serial.print("# timer running, interrupt priority ");
-    Serial.println(NVIC_GetPriority(dac_timer.get_cfg()->cycle_end_irq));
+    PC.print("# timer running, interrupt priority ");
+    PC.println(NVIC_GetPriority(dac_timer.get_cfg()->cycle_end_irq));
   } else {
-    Serial.println("# TIMER SETUP FAILED: the actuator will not move");
+    PC.println("# TIMER SETUP FAILED: the actuator will not move");
   }
   requestTare();
 }

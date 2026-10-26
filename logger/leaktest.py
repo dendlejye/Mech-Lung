@@ -25,7 +25,7 @@ from pathlib import Path
 import serial
 import serial.tools.list_ports
 
-BAUD = 230400          # must match SERIAL_BAUD in the sketch
+BAUD = 230400          # ignored over native USB (NATIVE_USB 1 in the sketch); never 1200, which resets the board
 ELEVATION_M = 27       # VU Footscray Park, Building D level 3: RL 26.1 m + about 1 m bench (VU design report)
 ROW_TIMEOUT_S = 2      # log rows normally arrive every 10 ms
 HERE = Path(__file__).parent

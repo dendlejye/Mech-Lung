@@ -25,6 +25,21 @@ Each sketch's header comment says how to run it and what passes.
 4. Leak tests: close the Arduino IDE (it holds the port), then
    `pip install pyserial` once and `python leaktest.py COM3`.
 
+## PC link: native USB
+
+The UNO R4 WiFi's USB normally goes through its ESP32-S3 bridge chip. In B1 the
+bridge's output to Python stalled after 3 to 67 s at 100 rows/s (a known,
+unfixed issue). So `MechLung_LeakTest` and B1 set `NATIVE_USB 1`: at boot the
+USB-C port is switched to the RA4M1's own USB, bypassing the bridge.
+
+- The board appears as a different COM port. Use that port in the IDE plotter,
+  `b1_reader.py` and `leaktest.py`. The baud setting is ignored (never use 1200,
+  which resets the board).
+- Uploading: double-tap the reset button, then upload. Retry once if it fails.
+  If no port appears at all, unplug and replug USB.
+- Lines printed before a program opens the port are dropped, not queued.
+- Set `NATIVE_USB 0` to go back to the bridge.
+
 ## Leak test run
 
 `leaktest.py` asks for room temperature (C), MSL pressure (hPa, from BoM) and a

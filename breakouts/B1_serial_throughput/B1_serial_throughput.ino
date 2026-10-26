@@ -18,6 +18,19 @@
   at least 230400 becomes SERIAL_BAUD in MechLung_LeakTest.ino and BAUD in
   logger/leaktest.py. If none passes, log mode cannot run at 100 Hz.
 */
+// NATIVE_USB 1: switch the USB-C port to the RA4M1's own USB at boot, bypassing
+// the ESP32-S3 bridge (its output stalled after 3 to 67 s at 100 rows/s). The
+// board then appears as a new COM port and the baud is ignored. To upload:
+// double-tap reset, then upload (retry once if it fails).
+// NATIVE_USB 0: Serial through the bridge at SERIAL_BAUD.
+#define NATIVE_USB 1
+#if NATIVE_USB
+#define PC SerialUSB
+void __USBStart();
+void __maybe_start_usb() { __USBStart(); }   // core hook, runs before setup()
+#else
+#define PC Serial
+#endif
 const unsigned long SERIAL_BAUD = 115200;
 const int LINE_BYTES = 68;                 // row length including CR LF (68 log row, 203 # breath)
 const unsigned long PERIOD_US = 10000;     // 100 Hz
@@ -30,7 +43,7 @@ unsigned long print_us = 0;                // how long the previous row took to 
 
 void setup() {
   pinMode(PRINT_PIN, OUTPUT);
-  Serial.begin(SERIAL_BAUD);
+  PC.begin(SERIAL_BAUD);
   delay(2000);
   memset(row, 'x', sizeof(row));
   next_us = micros();
@@ -43,8 +56,8 @@ void loop() {
   row[26] = 'x';
   digitalWrite(PRINT_PIN, HIGH);
   unsigned long t = micros();
-  Serial.write(row, sizeof(row) - 1);
-  Serial.println();
+  PC.write(row, sizeof(row) - 1);
+  PC.println();
   print_us = micros() - t;
   digitalWrite(PRINT_PIN, LOW);
 }
