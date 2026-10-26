@@ -59,10 +59,13 @@ Each item is saved in `logger/runs/<date>_<hhmmss>_p<preset>x<N>/`:
 - `meta.json`: conditions, the sketch's `# config` constants, the tare, and the
   per-breath figures.
 
-Flow is averaged over each 10 ms tick (`FLOW_AVG` in the sketch, `flow_avg=1`
-in `# config`): the SFM3000 is read about every 1 ms and the mean is logged, so
-fast flow ripple (such as the Jrk's 100 Hz update) cannot alias into the
-volume. Set `FLOW_AVG false` for single point samples.
+Flow is averaged over each 10 ms tick (`FLOW_AVG_READS` in the sketch, logged
+as `flow_avg=4` in `# config`): the SFM3000 is read 4 times per tick, 2.5 ms
+apart, and the mean is logged. Evenly spaced reads cancel ripple at 100, 200
+and 300 Hz, so the Jrk's 100 Hz update cannot alias into the volume. 4 reads
+replace the earlier 10 (1 ms apart), which locked the SFM3000 up. Ticks that
+got fewer reads are counted as `sfm_short` in `# status`. Set
+`FLOW_AVG_READS 1` for single point samples.
 
 Push leak = pot volume rise minus measured volume rise over the push. Return
 leak = the same for the fall from the peak to breath end. Attach the run folders

@@ -144,18 +144,22 @@ const uint32_t WIRE_CLOCK_HZ = 400000;   // never 200000: this core keeps the ol
 const uint32_t WIRE1_CLOCK_HZ = 400000;
 const unsigned int I2C_TIMEOUT_US = 1000;
 const int SENSOR_FAIL_TICKS = 5;         // consecutive failures before a restart
-// Flow averaging: read the SFM3000 about every 1 ms through the tick (in the
-// idle time and between the SDP811 reads) and report the mean, so flow
-// fluctuations faster than 50 Hz (e.g. the Jrk's 100 Hz update) average out
-// instead of aliasing. The mean covers the 10 ms before the tick (about 5 ms
-// behind the pot sample). Any failed read in the window makes the tick nan.
-// false: one point sample per tick, as before.
-// Off: on its first rig run (26 Oct 2026) the SFM3000 locked up 3 s into
-// preset 1 (every read failed until a power cycle), which it had not done in
-// about an hour of single-sample logging. Its datasheet lists lock-up as a
-// failure mode; the 10x read rate is the suspect.
-const bool FLOW_AVG = false;
-const unsigned long FLOW_AVG_US = 1000;
+// Flow averaging: FLOW_AVG_READS evenly spaced SFM3000 reads per tick, reported
+// as their mean. The tick's own read is the last; the extra reads fall at
+// multiples of FLOW_AVG_SPACING_US after the previous tick's read (taken in the
+// idle time and between the SDP811 reads). N reads 10/N ms apart cancel ripple
+// at 100 Hz and its harmonics up to (N - 1) x 100 Hz (4 reads: 100, 200 and
+// 300 Hz), so the Jrk's 100 Hz update cannot alias into the volume. The mean
+// is centred about 4 ms before the pot sample. Any failed read in the window
+// makes the tick nan. A tick whose window missed a slot (loop late, sensor
+// restarting) is still logged and counted in sfm_short in # status.
+// 1: one point sample per tick.
+// 4, not 10: at 10 reads per tick (1 ms apart) the SFM3000 locked up 3 s into
+// preset 1 on 26 Oct 2026 (every read failed until a power cycle). 4 reads keep
+// the filtering with 40% of that I2C traffic.
+const int FLOW_AVG_READS = 4;            // 1, 2 or 4
+const unsigned long FLOW_AVG_SPACING_US = 1000000UL / SAMPLE_HZ / FLOW_AVG_READS;
+const unsigned long SFM_MIN_GAP_US = 600; // the SFM3000 NACKs a read with no new result (0.5 ms refresh)
 
 // Modes held in current_preset (0 to 3 are the breathing presets).
 const int MODE_IDLE = -1;
@@ -204,7 +208,10 @@ bool sfm_discard = false;      // next good SFM3000 read is the invalid first on
 long sfm_sum = 0;              // flow averaging: sum and count of raw words this tick
 int sfm_n = 0;
 bool sfm_bad = false;          // a read in this tick's window failed
-unsigned long sfm_last_us = 0;
+unsigned long sfm_last_us = 0; // start of the last SFM3000 read
+unsigned long sfm_tick_us = 0; // start of the last tick read: the extra reads are timed from it
+int sfm_slot = FLOW_AVG_READS; // next extra read, 1 to FLOW_AVG_READS - 1 (FLOW_AVG_READS: none due)
+unsigned long sfm_short = 0;   // ticks averaged over fewer than FLOW_AVG_READS reads
 int sdp_blank[7];              // reads still blanked after an SDP811 restart
 unsigned long mux_err = 0;
 float tare[8];                 // flow in slm, pressures in Pa
@@ -499,7 +506,7 @@ void printConfig() {
   L.print(" sample_hz=");
   L.print(SAMPLE_HZ);
   L.print(" flow_avg=");
-  L.print(FLOW_AVG ? 1 : 0);
+  L.print(FLOW_AVG_READS);
   L.print(" period_ms=");
   for (int i = 0; i < 4; i++) {
     if (i > 0) L.print(',');
@@ -709,12 +716,17 @@ void sensorResult(int s, bool ok, uint32_t tick, bool bus_ok) {
 }
 
 // Read the SFM3000, then p1 to p7, into raw[] (slm, Pa). Failed reads are NAN.
-// Flow averaging: one extra SFM3000 read if 1 ms has passed. Skipped while the
-// sensor is failing or restarting, so a dead sensor cannot eat the tick.
+// Flow averaging: take the next extra SFM3000 read once its slot is due
+// (sfm_slot x FLOW_AVG_SPACING_US after the tick read). A late slot is read late,
+// at least SFM_MIN_GAP_US after the read before it. Skipped while the sensor is
+// failing or restarting, so a dead sensor cannot eat the tick.
 void sfmSample() {
-  if (!FLOW_AVG || sfm_discard || fail_run[0] > 0) return;
-  if (micros() - sfm_last_us < FLOW_AVG_US) return;
-  sfm_last_us = micros();
+  if (sfm_slot >= FLOW_AVG_READS || sfm_discard || fail_run[0] > 0) return;
+  unsigned long now = micros();
+  if (now - sfm_tick_us < (unsigned long)sfm_slot * FLOW_AVG_SPACING_US) return;
+  if (now - sfm_last_us < SFM_MIN_GAP_US) return;
+  sfm_last_us = now;
+  sfm_slot++;
   if (isnan(readFlow())) {
     sfm_bad = true;
   } else {
@@ -724,20 +736,21 @@ void sfmSample() {
 }
 
 void readSensors(float raw[8], uint32_t tick) {
-  // The SFM3000 NACKs a read with no new result (0.5 ms refresh), so leave
-  // 0.6 ms after an averaging read.
+  // The SFM3000 NACKs a read with no new result, so leave SFM_MIN_GAP_US after
+  // an averaging read.
   unsigned long since = micros() - sfm_last_us;
-  if (FLOW_AVG && since < 600) delayMicroseconds(600 - since);
-  sfm_last_us = micros();
+  if (FLOW_AVG_READS > 1 && since < SFM_MIN_GAP_US) delayMicroseconds(SFM_MIN_GAP_US - since);
+  sfm_last_us = sfm_tick_us = micros();
   raw[0] = readFlow();
   bool ok = !isnan(raw[0]);
   if (ok && sfm_discard) {
     sfm_discard = false;
     raw[0] = NAN;
   }
-  if (FLOW_AVG && !isnan(raw[0])) {
+  if (FLOW_AVG_READS > 1 && !isnan(raw[0])) {
     sfm_sum += sfm_raw;
     sfm_n++;
+    if (sfm_n < FLOW_AVG_READS) sfm_short++;
     float mean = (float)sfm_sum / sfm_n;
     sfm_raw = (uint16_t)(mean + 0.5f);
     raw[0] = sfm_bad ? NAN : constrain((mean - SFM3000_OFFSET) / SFM3000_SCALE, -SFM3000_MAX_SLM, SFM3000_MAX_SLM);
@@ -745,6 +758,7 @@ void readSensors(float raw[8], uint32_t tick) {
   sfm_sum = 0;
   sfm_n = 0;
   sfm_bad = false;
+  sfm_slot = 1;                 // next window starts from this read
   sensorResult(0, ok, tick, true);
 
   bool bus_ok = true;
@@ -927,6 +941,7 @@ void loop() {
   float raw[8];
   for (int i = 0; i < 8; i++) raw[i] = NAN;
   if (m != MODE_DEMO) readSensors(raw, tick);   // sensors off in the demo
+  else sfm_slot = FLOW_AVG_READS;               // no stale averaging slots after the demo
   readFeedback();
   if (tare_state) updateTare(raw, m, tick);
 
@@ -1031,6 +1046,8 @@ void loop() {
     }
     L.print(" mux_err=");
     L.print(mux_err);
+    L.print(" sfm_short=");
+    L.print(sfm_short);
     L.print(" max_loop_us=");
     L.print(max_loop_us);
   }
