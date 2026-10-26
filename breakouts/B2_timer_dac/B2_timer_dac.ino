@@ -19,7 +19,7 @@
 #include "FspTimer.h"
 
 const unsigned long SERIAL_BAUD = 115200;  // the baud chosen in B1
-const int CENTRE_DAC = 2011;               // applyDacCorrection(JRK_CENTRE) with the current constants
+const int CENTRE_DAC = 2014;               // applyDacCorrection(JRK_CENTRE) with the 26 Oct 2026 calibration
 const int TOGGLE_PIN = 3;
 
 FspTimer timer;

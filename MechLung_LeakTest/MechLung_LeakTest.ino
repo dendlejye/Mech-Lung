@@ -57,23 +57,24 @@
 #include "FspTimer.h"
 
 // Actuator Calibration Constants Copy from Calibration Sketch
-const int   JRK_CENTRE = 2049;
-const int   JRK_HALF_RANGE = 2002;
-const float DAC_CORR_OFFSET = 3.90f;
-const float DAC_CORR_GAIN = 4165.15f;
-const float POT_RAW_AT_CENTRE = 1165.89f;
-const float POT_DAC_COUNTS_PER_ADC = 1.8206f;
-// Record of this calibration run:
-// Jrk Input window (Input setup wizard): Minimum=47 Maximum=4051
-// Jrk Feedback (Feedback setup wizard): forward=2294 reverse=88
-// A1 at the ends: forward=2247.9 reverse=83.4
-// Step 3 point 1: applied=648 Jrk Input=663 Jrk Feedback=428 A1=418.7
-// Step 3 point 2: applied=2049 Jrk Input=2088 Jrk Feedback=1212 A1=1187.1
-// Step 3 point 3: applied=3450 Jrk Input=3513 Jrk Feedback=1996 A1=1954.6
-// A1 vs Jrk Feedback cross-check: worst difference 1.8 Jrk counts (0.08 % of span)
-// Step 4 min: command=42 feedback=41.6 error=-0.4 counts (-0.01 % of span)
-// Step 4 mid: command=2011 feedback=2013.3 error=2.3 counts (0.06 % of span)
-// Step 4 max: command=3979 feedback=3979.9 error=0.9 counts (0.02 % of span)
+const int   JRK_CENTRE = 2050;
+const int   JRK_HALF_RANGE = 2001;
+const float DAC_CORR_OFFSET = 4.83f;
+const float DAC_CORR_GAIN = 4159.28f;
+const float POT_RAW_AT_CENTRE = 1168.41f;
+const float POT_DAC_COUNTS_PER_ADC = 1.8156f;
+// Record of this calibration run (26 Oct 2026):
+// Jrk Input window (Input setup wizard): Minimum=48 Maximum=4051
+// Jrk Feedback (Feedback setup wizard): forward=2292 reverse=88
+// A1 at the ends: forward=2252.4 reverse=82.8
+// Step 3 point 1: applied=648 Jrk Input=663 Jrk Feedback=427 A1=415.3
+// Step 3 point 2: applied=2050 Jrk Input=2087 Jrk Feedback=1212 A1=1188.9
+// Step 3 point 3: applied=3451 Jrk Input=3510 Jrk Feedback=1996 A1=1960.5
+// A1 vs Jrk Feedback cross-check: worst difference 1.2 Jrk counts (0.06 % of span)
+// Step 4 min: command=43 feedback=42.3 error=-0.7 counts (-0.02 % of span)
+// Step 4 mid: command=2014 feedback=2016.9 error=2.9 counts (0.07 % of span)
+// Step 4 max: command=3984 feedback=3990.8 error=6.8 counts (0.17 % of span)
+// Verification: PASS
 
 const int DAC_MAX = 4095;             // 12-bit DAC full scale
 
