@@ -9,7 +9,9 @@ import serial
 port, baud = sys.argv[1], int(sys.argv[2])
 DURATION_S = 600
 
-ser = serial.Serial(port, baud, timeout=1)
+ser = serial.Serial(port, baud, timeout=0.05)
+if hasattr(ser, "set_buffer_size"):         # Windows: a 1 MB driver buffer instead of 4 kB
+    ser.set_buffer_size(rx_size=1 << 20, tx_size=4096)
 ser.reset_input_buffer()
 buf = b""
 
@@ -19,7 +21,7 @@ def next_line():
     pyserial's readline() reads one byte per call, which is too slow on Windows."""
     global buf
     while b"\n" not in buf:
-        chunk = ser.read(ser.in_waiting or 1)
+        chunk = ser.read(4096)             # returns early after 50 ms with whatever has arrived
         if not chunk:
             return ""
         buf += chunk
@@ -40,7 +42,7 @@ while time.time() - t0 < DURATION_S:
     if time.time() > next_report:
         next_report += 60
         print(f"  {time.time() - t0:.0f} s: {rows} rows, {gaps} gaps, {bad} malformed, "
-              f"backlog {ser.in_waiting + len(buf)} bytes"
+              f"unparsed {len(buf)} bytes"
               + (f", print time max {max(print_us) / 1000:.2f} ms" if print_us else ""))
     line = next_line()
     if not line.startswith("seq:"):
