@@ -128,12 +128,15 @@ class Rig:
 
 
 class Breaths:
-    """Works out each breath's figures from the raw rows, the same way the sketch does."""
+    """Works out each breath's figures from the raw rows, as the sketch does, except
+    the pot uses a 5-point median (the rig's pot has single and paired spikes in
+    motion that the sketch's 3-point median lets through)."""
 
     def __init__(self, cfg, tare, flow_conv):
         self.c, self.t, self.conv = cfg, tare, flow_conv
         self.pot_hist = []
         self.prev_tick = None
+        self.prev_ml = 0.0             # flow volume of the previous row
         self.cur = None
         self.done = []
 
@@ -147,13 +150,16 @@ class Breaths:
         """Feed one row. Returns a finished breath's figures, or None."""
         f = row.split(",")
         tick, breath, mode = int(f[0]), int(f[1]), int(f[2])
-        self.pot_hist = (self.pot_hist + [int(f[4])])[-3:]
-        pot = sorted(self.pot_hist)[1] if len(self.pot_hist) == 3 else self.pot_hist[-1]
+        self.pot_hist = (self.pot_hist + [int(f[4])])[-5:]
+        pot = sorted(self.pot_hist)[len(self.pot_hist) // 2]
         c = self.c
         fb = c["centre_dac"] + (pot - c["pot_raw_at_centre"]) * c["pot_dac_per_adc"]
         vp = c["v_tidal_ml"] * (fb - c["centre_dac"]) / c["stroke_amp_dac"]
         dt = 1 if self.prev_tick is None else tick - self.prev_tick
         self.prev_tick = tick
+        flow = self.flow_lmin(f[5])
+        row_ml = flow * 1000 / 60 * dt / c["sample_hz"]
+        prev_ml, self.prev_ml = self.prev_ml, row_ml
         finished = None
         if self.cur and (breath != self.cur["breath"] or mode < 0):
             if breath != self.cur["breath"] and mode >= 0:   # completed, not aborted
@@ -162,12 +168,14 @@ class Breaths:
         if mode < 0:
             return finished
         if self.cur is None:
-            self.cur = dict(breath=breath, seed=vp, vm=vp, pk_pot=-math.inf, pk_meas=-math.inf,
+            # The 5-point median runs 2 samples behind a moving piston, so the seed
+            # adds the previous row's flow; this row's flow is added below.
+            seed = vp + (prev_ml if not math.isnan(prev_ml) else 0.0)
+            self.cur = dict(breath=breath, seed=seed, vm=seed, pk_pot=-math.inf, pk_meas=-math.inf,
                             lost=0, failed=0, flow_bad=False)
         b = self.cur
-        flow = self.flow_lmin(f[5])
         b["flow_bad"] |= math.isnan(flow)
-        b["vm"] += 0 if b["flow_bad"] else flow * 1000 / 60 * dt / c["sample_hz"]
+        b["vm"] += 0 if b["flow_bad"] else row_ml
         b["lost"] += dt - 1
         b["failed"] += sum(1 for x in f[5:] if x == "")
         b["vp"] = vp
