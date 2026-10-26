@@ -105,8 +105,6 @@ const unsigned long TICK_BUDGET_US = 1000000UL / SAMPLE_HZ - 1500;  // Serial ti
 #if NATIVE_USB
 #define PC SerialUSB
 const unsigned long SERIAL_BAUD = 12000000; // nominal USB full speed: only sets the line time budget
-void __USBStart();
-void __maybe_start_usb() { __USBStart(); }   // core hook, runs before setup(): switches USB to the RA4M1
 #else
 #define PC Serial
 const unsigned long SERIAL_BAUD = 115200;   // set from breakout sketch B1
@@ -779,6 +777,14 @@ void printBreath() {
     L.print(flow_bad ? NAN : v[i], 2);   // a failed flow read makes the whole summary nan
   }
 }
+
+#if NATIVE_USB
+// Core hook, runs before setup(): switches the USB-C port to the RA4M1 and
+// starts its USB. Defined here, after the struct definitions, because the
+// Arduino IDE inserts its function prototypes above the first function.
+void __USBStart();
+void __maybe_start_usb() { __USBStart(); }
+#endif
 
 void setup() {
   PC.begin(SERIAL_BAUD);
