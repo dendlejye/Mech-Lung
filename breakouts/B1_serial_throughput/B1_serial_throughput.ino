@@ -8,7 +8,8 @@
 
   How to run, once per baud: 230400, 460800, 921600 (and 115200 for plot mode)
     1. Set SERIAL_BAUD below. Board: Arduino UNO R4 WiFi. Upload.
-    2. Scope D2: the high time is the print time.
+    2. Scope D2 (optional): the high time is the print time. Each row also
+     carries the previous row's print time (us:), which the reader reports.
     3. Close the Arduino Serial Monitor, then run on the PC:
          python b1_reader.py <port> <baud>
        It counts sequence gaps for 10 minutes.
@@ -25,6 +26,7 @@ const int PRINT_PIN = 2;
 char row[LINE_BYTES - 1];                  // row text without CR LF
 unsigned long seq = 0;
 unsigned long next_us;
+unsigned long print_us = 0;                // how long the previous row took to send
 
 void setup() {
   pinMode(PRINT_PIN, OUTPUT);
@@ -37,10 +39,12 @@ void setup() {
 void loop() {
   if ((long)(micros() - next_us) < 0) return;
   next_us += PERIOD_US;
-  snprintf(row, 16, "seq:%010lu,", seq++);    // fixed 15 characters, rest stays 'x'
-  row[15] = 'x';
+  snprintf(row, 27, "seq:%010lu,us:%07lu,", seq++, print_us);  // fixed 26 characters, rest stays 'x'
+  row[26] = 'x';
   digitalWrite(PRINT_PIN, HIGH);
+  unsigned long t = micros();
   Serial.write(row, sizeof(row) - 1);
   Serial.println();
+  print_us = micros() - t;
   digitalWrite(PRINT_PIN, LOW);
 }
