@@ -11,7 +11,23 @@ DURATION_S = 600
 
 ser = serial.Serial(port, baud, timeout=1)
 ser.reset_input_buffer()
-ser.readline()                         # drop a partial first line
+buf = b""
+
+
+def next_line():
+    """Read whatever has arrived in one call and return one line ('' if none within 1 s).
+    pyserial's readline() reads one byte per call, which is too slow on Windows."""
+    global buf
+    while b"\n" not in buf:
+        chunk = ser.read(ser.in_waiting or 1)
+        if not chunk:
+            return ""
+        buf += chunk
+    line, buf = buf.split(b"\n", 1)
+    return line.decode("ascii", "replace").strip()
+
+
+next_line()                            # drop a partial first line
 last = None
 rows = gaps = lost = bad = 0
 print_us = []
@@ -23,9 +39,10 @@ while time.time() - t0 < DURATION_S:
         sys.exit(1)
     if time.time() > next_report:
         next_report += 60
-        print(f"  {time.time() - t0:.0f} s: {rows} rows, {gaps} gaps, {bad} malformed"
+        print(f"  {time.time() - t0:.0f} s: {rows} rows, {gaps} gaps, {bad} malformed, "
+              f"backlog {ser.in_waiting + len(buf)} bytes"
               + (f", print time max {max(print_us) / 1000:.2f} ms" if print_us else ""))
-    line = ser.readline().decode("ascii", "replace").strip()
+    line = next_line()
     if not line.startswith("seq:"):
         bad += 1 if line else 0
         continue

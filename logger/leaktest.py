@@ -58,13 +58,22 @@ class Rig:
         self.rows, self.events = [], []
         self.recording = False
         self.log_on = False
+        self.buf = b""
 
     def send(self, key):
         self.ser.write(key.encode())
 
     def line(self):
         """Next line, or None. Rows are kept while recording; # lines are kept always."""
-        raw = self.ser.readline().decode("ascii", "replace").strip()
+        # Read whatever has arrived in one call: pyserial's readline() reads one byte
+        # per call, which cannot keep up with 100 rows/s on Windows.
+        while b"\n" not in self.buf:
+            chunk = self.ser.read(self.ser.in_waiting or 1)
+            if not chunk:
+                return None
+            self.buf += chunk
+        raw, self.buf = self.buf.split(b"\n", 1)
+        raw = raw.decode("ascii", "replace").strip()
         if not raw:
             return None
         if raw[0].isdigit():
@@ -285,6 +294,7 @@ def main():
     rig = Rig(sys.argv[1])
     time.sleep(3)                      # the board may reset when the port opens
     rig.ser.reset_input_buffer()
+    rig.buf = b""
     results = []
     for preset, n in queue:
         meta = run_item(rig, preset, n, cond)
