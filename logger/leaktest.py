@@ -106,7 +106,7 @@ class Rig:
             self.wait_for("# centre", 30)
             self.send("h")
         tare = self.wait_for("# tare ", 30)
-        if "aborted" in tare:
+        if "aborted" in tare or "rejected" in tare:
             raise RuntimeError(tare)
         return parse_fields(tare)
 
@@ -129,28 +129,37 @@ class Rig:
 
 class Breaths:
     """Works out each breath's figures from the raw rows, as the sketch does, except
-    the pot uses a 5-point median (the rig's pot has single and paired spikes in
-    motion that the sketch's 3-point median lets through)."""
+    the pot uses a POT_MEDIAN-point median. The rig's pot has single and paired
+    spikes in motion (up to about 1700 counts) that the sketch's 3-point median
+    lets through, and a 5-point median let some through to the peak pot volume
+    (run 27 Oct 11:10, breaths 1 and 4: push leak 181 and 171 mL against 150 and
+    158 mL with 11 points). An N-point median rejects runs of up to (N - 1) / 2
+    spikes and runs (N - 1) / 2 samples behind a moving piston."""
+
+    POT_MEDIAN = 11
+    LAG = (POT_MEDIAN - 1) // 2
 
     def __init__(self, cfg, tare, flow_conv):
         self.c, self.t, self.conv = cfg, tare, flow_conv
         self.pot_hist = []
         self.prev_tick = None
-        self.prev_ml = 0.0             # flow volume of the previous row
+        self.ml_hist = []              # flow volume of the last LAG - 1 rows
         self.cur = None
         self.done = []
 
     def flow_lmin(self, sfm):
         if sfm == "":
             return math.nan
-        slm = max(-200.0, min(200.0, (int(sfm) - self.c["sfm_offset"]) / self.c["sfm_scale"]))
+        slm = (int(sfm) - self.c["sfm_offset"]) / self.c["sfm_scale"]
+        if abs(slm) > 200.0:           # outside the sensor's range: not a measurement
+            return math.nan
         return self.c["flow_sign"] * (slm - self.t["flow_slm"]) * self.conv
 
     def add(self, row):
         """Feed one row. Returns a finished breath's figures, or None."""
         f = row.split(",")
         tick, breath, mode = int(f[0]), int(f[1]), int(f[2])
-        self.pot_hist = (self.pot_hist + [int(f[4])])[-5:]
+        self.pot_hist = (self.pot_hist + [int(f[4])])[-self.POT_MEDIAN:]
         pot = sorted(self.pot_hist)[len(self.pot_hist) // 2]
         c = self.c
         fb = c["centre_dac"] + (pot - c["pot_raw_at_centre"]) * c["pot_dac_per_adc"]
@@ -159,7 +168,8 @@ class Breaths:
         self.prev_tick = tick
         flow = self.flow_lmin(f[5])
         row_ml = flow * 1000 / 60 * dt / c["sample_hz"]
-        prev_ml, self.prev_ml = self.prev_ml, row_ml
+        prev_ml = sum(self.ml_hist)
+        self.ml_hist = (self.ml_hist + [row_ml])[-(self.LAG - 1):] if self.LAG > 1 else []
         finished = None
         if self.cur and (breath != self.cur["breath"] or mode < 0):
             if breath != self.cur["breath"] and mode >= 0:   # completed, not aborted
@@ -168,8 +178,8 @@ class Breaths:
         if mode < 0:
             return finished
         if self.cur is None:
-            # The 5-point median runs 2 samples behind a moving piston, so the seed
-            # adds the previous row's flow; this row's flow is added below.
+            # The median runs LAG samples behind a moving piston, so the seed adds
+            # the previous LAG - 1 rows' flow; this row's flow is added below.
             seed = vp + (prev_ml if not math.isnan(prev_ml) else 0.0)
             self.cur = dict(breath=breath, seed=seed, vm=seed, pk_pot=-math.inf, pk_meas=-math.inf,
                             lost=0, failed=0, flow_bad=False)
@@ -179,7 +189,7 @@ class Breaths:
         b["lost"] += dt - 1
         b["failed"] += sum(1 for x in f[5:] if x == "")
         b["vp"] = vp
-        b["vm_hist"] = (b.get("vm_hist", []) + [b["vm"]])[-3:]   # vm at the time vp refers to
+        b["vm_hist"] = (b.get("vm_hist", []) + [b["vm"]])[-(self.LAG + 1):]   # vm at the time vp refers to
         b["pk_pot"] = max(b["pk_pot"], vp)
         b["pk_meas"] = max(b["pk_meas"], b["vm"])
         return finished
@@ -191,7 +201,7 @@ class Breaths:
         # Return leak: fall of each from its peak to the breath end. Exact even when
         # the piston is not back at centre at phase 0 (first breath from rest).
         push = nan if b["flow_bad"] else b["pk_pot"] - b["pk_meas"]
-        # vp at breath end is 2 samples old (median), so compare it with vm 2 rows back.
+        # vp at breath end is LAG samples old (median), so compare it with vm LAG rows back.
         ret = nan if b["flow_bad"] else (b["pk_pot"] - b["vp"]) - (b["pk_meas"] - b["vm_hist"][0])
         net = nan if b["flow_bad"] else b["vm"] - b["seed"]
         out = dict(breath=b["breath"], push_leak_ml=push, return_leak_ml=ret,

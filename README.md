@@ -67,6 +67,14 @@ replace the earlier 10 (1 ms apart), which locked the SFM3000 up. Ticks that
 got fewer reads are counted as `sfm_short` in `# status`. Set
 `FLOW_AVG_READS 1` for single point samples.
 
+A flow tare outside +-1 slm prints `# tare rejected` and stops the run: power
+cycle the rig and start again. An SFM3000 that returns the same raw word for 50
+ticks in a row (frozen after a power glitch) or a word outside its +-200 slm range
+gives failed reads (empty fields), not values.
+
+The pot volume uses an 11-point median, which removes the rig's pot spikes (a
+5-point median let some through to the peak pot volume).
+
 Push leak = pot volume rise minus measured volume rise over the push. Return
 leak = the same for the fall from the peak to breath end. Attach the run folders
 here for analysis.

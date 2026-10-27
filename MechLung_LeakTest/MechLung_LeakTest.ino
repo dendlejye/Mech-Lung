@@ -128,13 +128,17 @@ const float FLOW_SIGN = 1.0f;         // + = out of cylinder. Flip if the plot i
 const float SLM_TO_LMIN = ((AMBIENT_TEMP_C + 273.15f) / 293.15f) * (1013.0f / AMBIENT_PRESSURE_HPA);
 const float SFM3000_OFFSET = 32000.0f;  // raw reading at zero flow (datasheet)
 const float SFM3000_SCALE = 140.0f;     // raw counts per slm, air (datasheet)
-const float SFM3000_MAX_SLM = 200.0f;   // sensor range, used to clamp output
+const float SFM3000_MAX_SLM = 200.0f;   // sensor range: a word outside it is a failed read
 
 // Tare: after the pot stays within TARE_STILL_COUNTS for TARE_SETTLE_MS,
 // average TARE_SAMPLES of flow and of each pressure.
 const int TARE_SAMPLES = 100;
 const unsigned long TARE_SETTLE_MS = 2000;  // PLACEHOLDER: set on the bench from pot noise at rest
 const float TARE_STILL_COUNTS = 15.0f;      // DAC counts: pot noise at rest spans 9 to 11 (rig, 26 Oct 2026)
+// A flow tare outside +-TARE_FLOW_MAX_SLM is not a zero (good tares read 0.004 to
+// 0.009 slm): the line reads "# tare rejected ...", the flow tare is nan, so flow
+// stays nan until a good tare (H when idle), and leaktest.py stops.
+const float TARE_FLOW_MAX_SLM = 1.0f;
 
 // I2C.
 const uint8_t SFM3000_ADDR = 0x40;
@@ -164,6 +168,13 @@ const int SENSOR_FAIL_TICKS = 5;         // consecutive failures before a restar
 const int FLOW_AVG_READS = 4;            // 1, 2 or 4
 const unsigned long FLOW_AVG_SPACING_US = 1000000UL / SAMPLE_HZ / FLOW_AVG_READS;
 const unsigned long SFM_MIN_GAP_US = 600; // the SFM3000 NACKs a read with no new result (0.5 ms refresh)
+// Frozen output: after a power glitch the SFM3000 can return one fixed word with a
+// valid CRC instead of measuring (27 Oct 2026: 1367 for a whole run). Its noise
+// moves the raw word every few ticks (longest identical run in rig data: 6), so
+// SFM_FROZEN_TICKS identical tick reads in a row count as failed reads, and the
+// usual failure path resends the start command. Words outside the sensor's
+// +-200 slm range are also failed reads, not clamped values.
+const int SFM_FROZEN_TICKS = 50;
 
 // Modes held in current_preset (0 to 3 are the breathing presets).
 const int MODE_IDLE = -1;
@@ -216,6 +227,8 @@ unsigned long sfm_last_us = 0; // start of the last SFM3000 read
 unsigned long sfm_tick_us = 0; // start of the last tick read: the extra reads are timed from it
 int sfm_slot = FLOW_AVG_READS; // next extra read, 1 to FLOW_AVG_READS - 1 (FLOW_AVG_READS: none due)
 unsigned long sfm_short = 0;   // ticks averaged over fewer than FLOW_AVG_READS reads
+uint16_t sfm_prev_word = 0;    // last tick read's raw word, for the frozen-output check
+int sfm_same = 0;              // tick reads in a row that returned sfm_prev_word
 int sdp_blank[7];              // reads still blanked after an SDP811 restart
 unsigned long mux_err = 0;
 float tare[8];                 // flow in slm, pressures in Pa
@@ -645,7 +658,9 @@ float readFlow() {
   if (crc8_sfm(hi, lo) != crc) return NAN;
   uint16_t raw = ((uint16_t)hi << 8) | lo;
   sfm_raw = raw;
-  return constrain(((float)raw - SFM3000_OFFSET) / SFM3000_SCALE, -SFM3000_MAX_SLM, SFM3000_MAX_SLM);
+  float slm = ((float)raw - SFM3000_OFFSET) / SFM3000_SCALE;
+  if (fabsf(slm) > SFM3000_MAX_SLM) return NAN;   // outside the range: not a measurement
+  return slm;
 }
 
 // Write the mux channel mask (1 << channel, or 0 for none). Returns true on success.
@@ -747,6 +762,15 @@ void readSensors(float raw[8], uint32_t tick) {
   sfm_last_us = sfm_tick_us = micros();
   raw[0] = readFlow();
   bool ok = !isnan(raw[0]);
+  if (ok) {                     // frozen-output check on the tick read's own word
+    sfm_same = (sfm_raw == sfm_prev_word) ? sfm_same + 1 : 1;
+    sfm_prev_word = sfm_raw;
+    if (sfm_same >= SFM_FROZEN_TICKS) {
+      ok = false;
+      raw[0] = NAN;
+      sfm_bad = true;
+    }
+  }
   if (ok && sfm_discard) {
     sfm_discard = false;
     raw[0] = NAN;
@@ -757,7 +781,7 @@ void readSensors(float raw[8], uint32_t tick) {
     if (sfm_n < FLOW_AVG_READS) sfm_short++;
     float mean = (float)sfm_sum / sfm_n;
     sfm_raw = (uint16_t)(mean + 0.5f);
-    raw[0] = sfm_bad ? NAN : constrain((mean - SFM3000_OFFSET) / SFM3000_SCALE, -SFM3000_MAX_SLM, SFM3000_MAX_SLM);
+    raw[0] = sfm_bad ? NAN : (mean - SFM3000_OFFSET) / SFM3000_SCALE;   // every read in the mean is in range
   }
   sfm_sum = 0;
   sfm_n = 0;
@@ -814,13 +838,16 @@ void updateTare(float raw[8], int m, uint32_t tick) {
   pot_hi = max(pot_hi, feedback_dac);
   if (tick - tare_t0 >= (uint32_t)TARE_SAMPLES) {
     tare_state = 0;
+    for (int i = 0; i < 8; i++) tare[i] = tare_sum[i] / tare_n[i];   // no good reads gives nan
+    float flow_tare = tare[0];
+    bool rejected = !isnan(flow_tare) && fabsf(flow_tare) > TARE_FLOW_MAX_SLM;
+    if (rejected) tare[0] = NAN;   // flow stays nan until a good tare
     Line &L = newLine();
-    L.print("# tare");
+    L.print(rejected ? "# tare rejected" : "# tare");
     for (int i = 0; i < 8; i++) {
-      tare[i] = tare_sum[i] / tare_n[i];   // no good reads gives nan
       L.print(i == 0 ? " flow_slm=" : " ");
       if (i > 0) { L.print(SENSOR_NAME[i]); L.print("_Pa="); }
-      L.print(tare[i], 3);
+      L.print(i == 0 ? flow_tare : tare[i], 3);
     }
     L.print(" pot_spread_dac=");
     L.print(pot_hi - pot_lo, 1);
