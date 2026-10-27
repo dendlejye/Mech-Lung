@@ -80,9 +80,11 @@ const int DAC_MAX = 4095;             // 12-bit DAC full scale
 
 // Rig and breathing settings.
 // ACTUATOR_STROKE_MM: distance between the min and max ends of the calibrated
-// Jrk window, measured with the min / max commands. Measured on this rig: 230 mm.
+// Jrk window, measured with the min / max commands. Remeasured on this rig: 221 mm
+// (27 Oct 2026; was 230 mm, which moved the piston 4% short of the commanded volume
+// and showed up as a 5% gap at every preset with no model fitted).
 // If tidal volume or peak flow measure off on the rig, re-check it first.
-const float ACTUATOR_STROKE_MM = 230.0f;
+const float ACTUATOR_STROKE_MM = 221.0f;
 const float CYLINDER_DIAMETER_MM = 129.15f;   // bore of the cylinder, measured with callipers
 const float V_TIDAL_ML = 700.0f;              // volume moved per breath
 const float IE_EXP_PARTS = 2.0f;              // expiration : inspiration time ratio
