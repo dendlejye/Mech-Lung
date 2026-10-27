@@ -58,6 +58,7 @@
   Travel limits are set inside the Jrk, not here. Set them before the first run.
 */
 #include <Wire.h>
+#include <SensirionCore.h>   // Library Manager: "Sensirion Core"
 #include "FspTimer.h"
 
 // Actuator Calibration Constants Copy from Calibration Sketch
@@ -662,40 +663,28 @@ void readKeys() {
   }
 }
 
-// ---- Sensors (from flow_sfm3000.ino and pressure_sdp811.ino) ----
+// ---- Sensors ----
+// I2C framing and CRC-8 from the Sensirion Core library (Library Manager:
+// "Sensirion Core"). Its sensor drivers are not used: their reads add a 1 ms
+// delay each (11 ms per tick here) and the SDP811 start a 10 ms delay.
+// Functions below return Sensirion error codes (0 = OK, errorToString() for text).
 
-// CRC-8, polynomial 0x31. Initial value 0x00 for the SFM3000, 0xFF for the SDP811.
-uint8_t crc8(uint8_t init, uint8_t hi, uint8_t lo) {
-  uint8_t crc = init;
-  uint8_t data[2] = {hi, lo};
-  for (int i = 0; i < 2; i++) {
-    crc ^= data[i];
-    for (int bit = 0; bit < 8; bit++) {
-      if (crc & 0x80) crc = (crc << 1) ^ 0x31;
-      else crc = crc << 1;
-    }
-  }
-  return crc;
-}
-uint8_t crc8_sfm(uint8_t hi, uint8_t lo) { return crc8(0x00, hi, lo); }
-uint8_t crc8_sdp(uint8_t hi, uint8_t lo) { return crc8(0xFF, hi, lo); }
-
-// SFM3000 start continuous measurement (0x1000). Returns the endTransmission code.
-uint8_t sfmStart() {
-  Wire.beginTransmission(SFM3000_ADDR);
-  Wire.write(0x10);
-  Wire.write(0x00);
-  return Wire.endTransmission();
+// Send a 16-bit command with no arguments.
+uint16_t sensirionCommand(TwoWire &bus, uint8_t addr, uint16_t cmd) {
+  uint8_t buf[2];
+  SensirionI2CTxFrame tx = SensirionI2CTxFrame::createWithUInt16Command(cmd, buf, 2);
+  return SensirionI2CCommunication::sendFrame(addr, tx, bus);
 }
 
-// One flow value in slm, or NAN on a failed read.
+// SFM3000 start continuous measurement (0x1000).
+uint16_t sfmStart() { return sensirionCommand(Wire, SFM3000_ADDR, 0x1000); }
+
+// One flow value in slm, or NAN on a failed read (short read or CRC, initial value 0x00).
 float readFlow() {
-  if (Wire.requestFrom((int)SFM3000_ADDR, 3) != 3) return NAN;
-  uint8_t hi = Wire.read();
-  uint8_t lo = Wire.read();
-  uint8_t crc = Wire.read();
-  if (crc8_sfm(hi, lo) != crc) return NAN;
-  uint16_t raw = ((uint16_t)hi << 8) | lo;
+  uint8_t buf[3];
+  SensirionI2CRxFrame rx(buf, sizeof(buf));
+  uint16_t raw;
+  if (SensirionI2CCommunication::receiveFrame(SFM3000_ADDR, 3, rx, Wire, CRC31_00) || rx.getUInt16(raw)) return NAN;
   sfm_raw = raw;
   float slm = ((float)raw - SFM3000_OFFSET) / SFM3000_SCALE;
   if (fabsf(slm) > SFM3000_MAX_SLM) return NAN;   // outside the range: not a measurement
@@ -710,35 +699,25 @@ bool muxWrite(uint8_t mask) {
 }
 
 // SDP811 start continuous measurement, differential pressure, no averaging (0x361E).
-bool sdpStart() {
-  Wire1.beginTransmission(SDP_ADDR);
-  Wire1.write(0x36);
-  Wire1.write(0x1E);
-  return Wire1.endTransmission() == 0;
-}
+bool sdpStart() { return sensirionCommand(Wire1, SDP_ADDR, 0x361E) == 0; }
 
 // SDP811 stop measurement (0x3FF9). The sensor may not answer if it is already idle.
-void sdpStop() {
-  Wire1.beginTransmission(SDP_ADDR);
-  Wire1.write(0x3F);
-  Wire1.write(0xF9);
-  Wire1.endTransmission();
-}
+void sdpStop() { sensirionCommand(Wire1, SDP_ADDR, 0x3FF9); }
 
 // Read the SDP811 on mux channel ch (already selected), in Pa, or NAN on a failed read.
-// 9 bytes: pressure, temperature and scale factor, each 2 bytes + CRC.
+// 9 bytes: pressure, temperature and scale factor, each 2 bytes + CRC (initial value
+// 0xFF). receiveFrame checks all three CRCs; the temperature is not used.
 float readPressure(int ch) {
-  if (Wire1.requestFrom((uint8_t)SDP_ADDR, (uint8_t)9) < 9) {
+  uint8_t buf[9];
+  SensirionI2CRxFrame rx(buf, sizeof(buf));
+  if (SensirionI2CCommunication::receiveFrame(SDP_ADDR, 9, rx, Wire1, CRC31_ff)) {
     while (Wire1.available()) Wire1.read();   // empty the buffer after a short read
     return NAN;
   }
-  uint8_t b[9];
-  for (int i = 0; i < 9; i++) b[i] = Wire1.read();
-  if (crc8_sdp(b[0], b[1]) != b[2]) return NAN;  // pressure
-  if (crc8_sdp(b[3], b[4]) != b[5]) return NAN;  // temperature (checked, not used)
-  if (crc8_sdp(b[6], b[7]) != b[8]) return NAN;  // scale factor
-  int16_t raw_pressure = (int16_t)(((uint16_t)b[0] << 8) | b[1]);
-  int16_t raw_scale = (int16_t)(((uint16_t)b[6] << 8) | b[7]);
+  int16_t raw_pressure, raw_temp, raw_scale;
+  rx.getInt16(raw_pressure);
+  rx.getInt16(raw_temp);
+  rx.getInt16(raw_scale);
   if (raw_scale <= 0) return NAN;
   sdp_raw[ch] = raw_pressure;
   sdp_scale = raw_scale;
@@ -941,13 +920,15 @@ void setup() {
   Wire1.setClock(WIRE1_CLOCK_HZ);
   Wire1.setWireTimeout(WIRE1_TIMEOUT_US);
 
-  uint8_t err = sfmStart();
+  uint16_t err = sfmStart();
   sfm_discard = true;
   if (err == 0) {
     PC.println("# SFM3000 found");
   } else {
-    PC.print("# SFM3000 not found, I2C error code ");
-    PC.println(err);
+    char msg[64];
+    errorToString(err, msg, sizeof(msg));
+    PC.print("# SFM3000 not found: ");
+    PC.println(msg);
   }
   for (int ch = 0; ch < 7; ch++) {
     PC.print("# SDP811 p");

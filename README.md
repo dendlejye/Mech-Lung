@@ -8,7 +8,7 @@ driven actuator, an SFM3000 flow sensor and seven SDP811 pressure sensors.
 | Path | What it is |
 |---|---|
 | `MechLung_LeakTest/` | Merged sketch: actuator, flow and pressure at 100 Hz, per-breath volume and leak check. Plot mode for the Arduino IDE Serial Plotter; log mode (key L) streams raw 100 Hz rows for `leaktest.py`. |
-| `MechLung_CorrectionFactorTest/` | `MechLung_LeakTest` with the per-preset flow correction applied, so peak flow at the SFM3000 meets each preset's target. Same keys and log format. |
+| `MechLung_CorrectionFactorTest/` | `MechLung_LeakTest` with the per-preset flow correction applied, so peak flow at the SFM3000 meets each preset's target. Same keys and log format. Needs the `Sensirion Core` library (Library Manager) for the SFM3000 / SDP811 I2C framing and CRC; `MechLung_LeakTest` has no library dependency. |
 | `logger/leaktest.py` | Runs leak tests from the PC (Windows, Python 3 + pyserial): asks T, P and a queue, drives the sketch, saves each run under `logger/runs/`. |
 | `breakouts/B1_serial_throughput/` | Serial throughput test and `b1_reader.py` (PC gap counter). Sets `SERIAL_BAUD`. |
 | `breakouts/B2_timer_dac/` | 1 kHz timer interrupt writing the DAC register directly. Disconnect the Jrk from A0 first. |
