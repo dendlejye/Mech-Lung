@@ -79,7 +79,7 @@ The pot volume uses an 11-point median, which removes the rig's pot spikes (a
 Flow correction, `MechLung_CorrectionFactorTest` only (`FLOW_GAIN_ON`, `GAIN_EXP`, `GAIN_INSP` in the sketch, logged as
 `gain_exp` and `gain_insp` in `# config`) scales each preset so the peak flow at
 the SFM3000 meets the target. `GAIN_EXP` scales the stroke; the inspiration time
-is scaled by `GAIN_EXP / GAIN_INSP`. Gains come from the 27 Oct 15:23 model runs.
+is scaled by `GAIN_EXP / GAIN_INSP`. Gains come from the uncorrected 28 Oct 08:47 model runs.
 
 Push leak = pot volume rise minus measured volume rise over the push. Return
 leak = the same for the fall from the peak to breath end. Attach the run folders

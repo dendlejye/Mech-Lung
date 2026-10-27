@@ -96,7 +96,10 @@ const float IE_INSP_PARTS = 1.0f;
 float preset_q_peak_Lmin[4] = {10.0f, 15.0f, 20.0f, 30.0f};  // keys 1 to 4
 // Flow correction: scales each preset so the peak flow measured at the SFM3000
 // meets the target, making up for the seal leak (target / measured, model
-// connected, 221 mm stroke, 21.2 C, 1017.4 hPa: runs of 27 Oct 2026 15:23).
+// connected, 221 mm stroke, 19.7 C, 1021.1 hPa MSL: uncorrected runs of 28 Oct
+// 2026 08:47). The 27 Oct 15:23 gains overshot by 1 to 1.8 % after the actuator's
+// tracking improved from about 15 to 6 mL short; re-check with an uncorrected run
+// at the start of each session.
 // The piston has to return to centre, so both strokes move the same volume:
 //   GAIN_EXP scales the stroke amplitude, so expiratory peak flow x GAIN_EXP;
 //   inspiration time is scaled by GAIN_EXP / GAIN_INSP, so inspiratory peak
@@ -106,8 +109,8 @@ float preset_q_peak_Lmin[4] = {10.0f, 15.0f, 20.0f, 30.0f};  // keys 1 to 4
 // short (the push loss follows the oscillation, not the stroke shape).
 // FLOW_GAIN_ON false: no correction (all gains 1).
 const bool FLOW_GAIN_ON = true;
-const float GAIN_EXP[4] = {1.016f, 1.014f, 1.015f, 1.025f};
-const float GAIN_INSP[4] = {0.998f, 1.007f, 1.012f, 1.024f};
+const float GAIN_EXP[4] = {1.008f, 1.003f, 1.005f, 1.014f};
+const float GAIN_INSP[4] = {0.984f, 0.993f, 0.997f, 1.012f};
 
 // Timing.
 const int DAC_UPDATE_HZ = 1000;       // timer rate: DAC written every 1 ms
