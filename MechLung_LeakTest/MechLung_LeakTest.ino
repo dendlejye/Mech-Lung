@@ -90,20 +90,6 @@ const float V_TIDAL_ML = 700.0f;              // volume moved per breath
 const float IE_EXP_PARTS = 2.0f;              // expiration : inspiration time ratio
 const float IE_INSP_PARTS = 1.0f;
 float preset_q_peak_Lmin[4] = {10.0f, 15.0f, 20.0f, 30.0f};  // keys 1 to 4
-// Flow correction: scales each preset so the peak flow measured at the SFM3000
-// meets the target, making up for the seal leak (target / measured, model
-// connected, 221 mm stroke, 21.2 C, 1017.4 hPa: runs of 27 Oct 2026 15:23).
-// The piston has to return to centre, so both strokes move the same volume:
-//   GAIN_EXP scales the stroke amplitude, so expiratory peak flow x GAIN_EXP;
-//   inspiration time is scaled by GAIN_EXP / GAIN_INSP, so inspiratory peak
-//   flow x GAIN_INSP. The breath gets slightly longer (preset 1: +0.6 %, I:E
-//   1:1.96) and moves 700 x GAIN_EXP mL, measured volume stays physical.
-// Preset 1 expiration is corrected to peak flow; its volume stays about 5 %
-// short (the push loss follows the oscillation, not the stroke shape).
-// FLOW_GAIN_ON false: no correction (all gains 1).
-const bool FLOW_GAIN_ON = true;
-const float GAIN_EXP[4] = {1.016f, 1.014f, 1.015f, 1.025f};
-const float GAIN_INSP[4] = {0.998f, 1.007f, 1.012f, 1.024f};
 
 // Timing.
 const int DAC_UPDATE_HZ = 1000;       // timer rate: DAC written every 1 ms
@@ -202,8 +188,7 @@ const int MODE_HOLD = -5;      // parked at max or min until H
 float preset_t_exp_us[4];      // expiration time
 float preset_t_insp_us[4];     // inspiration time
 float preset_period_us[4];     // one full breath
-float stroke_amp_dac = 0.0f;   // stroke amplitude in DAC counts for V_TIDAL_ML (volume scale)
-float preset_amp_dac[4];       // stroke amplitude each preset commands (x GAIN_EXP)
+float stroke_amp_dac = 0.0f;   // stroke amplitude in DAC counts
 int corrected_centre_dac = 0;
 float filter_alpha = 1.0f;     // per-update filter coefficient (1 = no filter)
 
@@ -258,7 +243,6 @@ float tare_sum[8], tare_n[8];
 
 // Breath state.
 bool in_breath = false;
-int breath_preset = 0;         // preset of the breath in progress (for its summary)
 bool flow_bad = false;
 uint32_t last_breath = 0, breath_start = 0;
 float vol_meas = 0, vol_seed = 0, pk_pot, pk_meas, pk_flow, t_pot, t_meas, p_pk[7];
@@ -277,7 +261,7 @@ int cmd_len = 0;
 unsigned long cmd_ms = 0;
 
 // ---- Serial writer: lines are queued, one is sent per sample tick ----
-const int LINE_LEN = 320;              // the # config line is about 280 characters
+const int LINE_LEN = 256;
 const int QUEUE_LEN = 8;
 struct Line : public Print {
   char s[LINE_LEN];
@@ -400,10 +384,6 @@ void initPresets() {
     float Q_mls = preset_q_peak_Lmin[i] * 1000.0f / 60.0f;
     float t_insp_s = (V_TIDAL_ML * PI) / (2.0f * Q_mls);
     float t_exp_s = t_insp_s * (IE_EXP_PARTS / IE_INSP_PARTS);
-    float g_exp = FLOW_GAIN_ON ? GAIN_EXP[i] : 1.0f;
-    float g_insp = FLOW_GAIN_ON ? GAIN_INSP[i] : 1.0f;
-    t_insp_s *= g_exp / g_insp;             // inspiratory peak flow x g_insp
-    preset_amp_dac[i] = stroke_amp_dac * g_exp;
     preset_t_exp_us[i] = t_exp_s * 1e6f;
     preset_t_insp_us[i] = t_insp_s * 1e6f;
     preset_period_us[i] = (t_exp_s + t_insp_s) * 1e6f;
@@ -420,7 +400,7 @@ void stepBreathing(float phi) {
   } else {
     pos_norm = 0.5f * (1.0f + cosf(PI * (phi - preset_t_exp_us[i]) / preset_t_insp_us[i]));
   }
-  outputProfile((float)corrected_centre_dac + preset_amp_dac[i] * pos_norm);
+  outputProfile((float)corrected_centre_dac + stroke_amp_dac * pos_norm);
 }
 
 // Demo sine: sweeps the calibrated Jrk window end to end, less
@@ -528,16 +508,6 @@ void printConfig() {
   L.print(corrected_centre_dac);
   L.print(" stroke_amp_dac=");
   L.print(stroke_amp_dac, 3);
-  L.print(" gain_exp=");
-  for (int i = 0; i < 4; i++) {
-    if (i > 0) L.print(',');
-    L.print(FLOW_GAIN_ON ? GAIN_EXP[i] : 1.0f, 3);
-  }
-  L.print(" gain_insp=");
-  for (int i = 0; i < 4; i++) {
-    if (i > 0) L.print(',');
-    L.print(FLOW_GAIN_ON ? GAIN_INSP[i] : 1.0f, 3);
-  }
   L.print(" v_tidal_ml=");
   L.print(V_TIDAL_ML, 1);
   L.print(" pot_raw_at_centre=");
@@ -892,8 +862,7 @@ void printBreath() {
   static const char *NAMES[15] = {"track_err_ml", "leak_ml", "leak_pct", "t_pot_peak_s", "t_meas_peak_s",
                                   "shortfall_ml", "peak_flow_Lmin", "p1", "p2", "p3", "p4", "p5", "p6", "p7", "net_ml"};
   float leak = pk_pot - pk_meas;
-  float v_cmd = V_TIDAL_ML * (FLOW_GAIN_ON ? GAIN_EXP[breath_preset] : 1.0f);
-  float v[15] = {v_cmd - pk_pot, leak, 100.0f * leak / pk_pot, t_pot, t_meas,
+  float v[15] = {V_TIDAL_ML - pk_pot, leak, 100.0f * leak / pk_pot, t_pot, t_meas,
                  V_TIDAL_ML - pk_meas, pk_flow, p_pk[0], p_pk[1], p_pk[2], p_pk[3], p_pk[4], p_pk[5], p_pk[6], vol_meas - vol_seed};
   Line &L = newLine();
   L.print("# breath");
@@ -1019,7 +988,6 @@ void loop() {
     last_breath = breath;
     if (in_breath && !log_mode) printBreath();
     in_breath = (m >= 0);
-    if (in_breath) breath_preset = m;
     breath_start = tick;
     flow_bad = false;
     vol_meas = 0;

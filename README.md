@@ -8,6 +8,7 @@ driven actuator, an SFM3000 flow sensor and seven SDP811 pressure sensors.
 | Path | What it is |
 |---|---|
 | `MechLung_LeakTest/` | Merged sketch: actuator, flow and pressure at 100 Hz, per-breath volume and leak check. Plot mode for the Arduino IDE Serial Plotter; log mode (key L) streams raw 100 Hz rows for `leaktest.py`. |
+| `MechLung_CorrectionFactorTest/` | `MechLung_LeakTest` with the per-preset flow correction applied, so peak flow at the SFM3000 meets each preset's target. Same keys and log format. |
 | `logger/leaktest.py` | Runs leak tests from the PC (Windows, Python 3 + pyserial): asks T, P and a queue, drives the sketch, saves each run under `logger/runs/`. |
 | `breakouts/B1_serial_throughput/` | Serial throughput test and `b1_reader.py` (PC gap counter). Sets `SERIAL_BAUD`. |
 | `breakouts/B2_timer_dac/` | 1 kHz timer interrupt writing the DAC register directly. Disconnect the Jrk from A0 first. |
@@ -75,7 +76,7 @@ gives failed reads (empty fields), not values.
 The pot volume uses an 11-point median, which removes the rig's pot spikes (a
 5-point median let some through to the peak pot volume).
 
-Flow correction (`FLOW_GAIN_ON`, `GAIN_EXP`, `GAIN_INSP` in the sketch, logged as
+Flow correction, `MechLung_CorrectionFactorTest` only (`FLOW_GAIN_ON`, `GAIN_EXP`, `GAIN_INSP` in the sketch, logged as
 `gain_exp` and `gain_insp` in `# config`) scales each preset so the peak flow at
 the SFM3000 meets the target. `GAIN_EXP` scales the stroke; the inspiration time
 is scaled by `GAIN_EXP / GAIN_INSP`. Gains come from the 27 Oct 15:23 model runs.
