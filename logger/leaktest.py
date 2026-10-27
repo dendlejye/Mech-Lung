@@ -1,16 +1,18 @@
-"""leaktest.py - runs leak tests on MechLung_LeakTest.ino and saves the data.
+"""leaktest.py - runs leak tests on MechLung_LeakTest.ino (and its
+MechLung_CorrectionFactorTest / MechLung_SteadyStateTest copies) and saves the data.
 
 Usage (Windows):  python leaktest.py COM3      (no port: lists the ports)
 Needs:            pip install pyserial
                   SERIAL_BAUD in the sketch = BAUD below (at least 230400)
 
-Asks for room temperature, MSL pressure and a queue such as "4x20, 1x10"
-(preset x complete breaths). For each item it tares, turns log mode on,
-runs the preset for N breaths, returns to centre and saves:
-  runs\\<date>_<hhmmss>_p<preset>x<N>\\samples.csv   raw log rows
+Asks for room temperature, MSL pressure and a queue such as "4x20, 1x10, s2x6"
+(preset x complete breaths; sN x complete strokes of steady flow N, needs
+MechLung_SteadyStateTest). For each item it tares, turns log mode on,
+runs the preset for N breaths (or strokes), returns to centre and saves:
+  runs\\<date>_<hhmmss>_p<preset>x<N>\\samples.csv   raw log rows (_s<preset>x<N> for steady)
                                      events.log    # lines, after the tick they followed
                                      meta.json     conditions, constants, tare, per-breath figures
-Prints one line per breath. Ctrl+C stops the actuator, saves what it has and
+Prints one line per breath (or stroke). Ctrl+C stops the actuator, saves what it has and
 marks the run aborted.
 """
 import json
@@ -211,22 +213,116 @@ class Breaths:
         return out
 
 
-def run_item(rig, preset, n, cond):
+class Strokes:
+    """Steady flow (MechLung_SteadyStateTest, modes 4 to 7): figures for each
+    stroke (one "breath" in the log). mean_flow_Lmin is over the middle of the
+    stroke, ss_trim of the stroke time left off each end. pot_ml and meas_ml are
+    the volume moved by the piston (POT_MEDIAN-point median pot, as Breaths) and
+    through the SFM3000 over the stroke, signed (+ = out of the cylinder). The
+    median runs LAG rows behind a moving piston, so pot is compared with the
+    flow volume LAG rows back."""
+
+    POT_MEDIAN = Breaths.POT_MEDIAN
+    LAG = Breaths.LAG
+
+    def __init__(self, cfg, tare, flow_conv, mode):
+        if "ss_stroke_ms" not in cfg:
+            raise RuntimeError("steady flow needs MechLung_SteadyStateTest (no ss_stroke_ms in # config)")
+        self.c, self.mode = cfg, mode
+        self.flow = Breaths(cfg, tare, flow_conv).flow_lmin
+        i = mode - 4
+        self.q = cfg["ss_q_Lmin"][i]
+        self.stroke_ticks = cfg["ss_stroke_ms"][i] * cfg["sample_hz"] / 1000
+        self.pot_hist = []
+        self.prev_tick = None
+        self.cum = 0.0                  # flow volume since the first row, nan rows count 0
+        self.cum_hist = []              # cum of the last LAG + 1 rows
+        self.nan_hist = []
+        self.cur = None
+        self.done = []
+
+    def add(self, row):
+        """Feed one row. Returns a finished stroke's figures, or None."""
+        f = row.split(",")
+        tick, breath, mode = int(f[0]), int(f[1]), int(f[2])
+        self.pot_hist = (self.pot_hist + [int(f[4])])[-self.POT_MEDIAN:]
+        pot = sorted(self.pot_hist)[len(self.pot_hist) // 2]
+        c = self.c
+        fb = c["centre_dac"] + (pot - c["pot_raw_at_centre"]) * c["pot_dac_per_adc"]
+        vp = c["v_tidal_ml"] * (fb - c["centre_dac"]) / c["stroke_amp_dac"]
+        dt = 1 if self.prev_tick is None else tick - self.prev_tick
+        self.prev_tick = tick
+        flow = self.flow(f[5])
+        bad = math.isnan(flow)
+        self.cum += 0.0 if bad else flow * 1000 / 60 * dt / c["sample_hz"]
+        self.cum_hist = (self.cum_hist + [self.cum])[-(self.LAG + 1):]
+        self.nan_hist = (self.nan_hist + [bad])[-(self.LAG + 1):]
+        finished = None
+        if self.cur and (breath != self.cur["breath"] or mode != self.mode):
+            if breath != self.cur["breath"] and mode == self.mode:   # completed, not aborted
+                finished = self.close()
+            self.cur = None
+        if mode != self.mode:
+            return finished
+        if self.cur is None:
+            self.cur = dict(breath=breath, t0=tick, vp0=vp, vm0=self.cum_hist[0], sum=0.0, n=0,
+                            lost=0, failed=0, flow_bad=any(self.nan_hist))
+        b = self.cur
+        b["flow_bad"] |= bad
+        b["lost"] += dt - 1
+        b["failed"] += sum(1 for x in f[5:] if x == "")
+        b["vp"], b["vm"] = vp, self.cum_hist[0]
+        t = tick - b["t0"]
+        trim = c["ss_trim"] * self.stroke_ticks
+        if trim <= t <= self.stroke_ticks - trim and not bad:
+            b["sum"] += flow
+            b["n"] += 1
+        return finished
+
+    def close(self):
+        b = self.cur
+        nan = math.nan
+        pot = b["vp"] - b["vp0"]
+        meas = nan if b["flow_bad"] else b["vm"] - b["vm0"]
+        mean = nan if b["flow_bad"] or b["n"] == 0 else b["sum"] / b["n"]
+        leak = abs(pot) - abs(meas)
+        out = dict(breath=b["breath"], dir="out" if pot > 0 else "in", target_Lmin=self.q,
+                   mean_flow_Lmin=mean, flow_pct=100 * abs(mean) / self.q,
+                   pot_ml=pot, meas_ml=meas, leak_ml=leak,
+                   leak_pct=100 * leak / abs(pot) if pot else nan,
+                   lost_rows=b["lost"], failed_reads=b["failed"])
+        self.done.append(out)
+        return out
+
+
+def run_item(rig, item, n, cond):
+    """item: "1" to "4" (breathing preset) or "s1" to "s4" (steady flow)."""
+    steady = item.startswith("s")
+    preset = int(item[-1])
+    mode = preset - 1 + (4 if steady else 0)
+    what = "strokes" if steady else "breaths"
     rig.rows, rig.events = [], []
     start = datetime.now()
-    meta = dict(cond, preset=preset, breaths_requested=n, start=start.isoformat(timespec="seconds"),
-                aborted=False)
+    meta = dict(cond, preset=preset, steady=steady, **{f"{what}_requested": n},
+                start=start.isoformat(timespec="seconds"), aborted=False)
     an = None
     try:
         meta["tare"] = rig.idle_and_tare()
         meta["config"] = cfg = rig.log(True)
-        an = Breaths(cfg, meta["tare"], cond["flow_conv"])
+        if steady:
+            an = Strokes(cfg, meta["tare"], cond["flow_conv"], mode)
+        else:
+            an = Breaths(cfg, meta["tare"], cond["flow_conv"])
         rig.recording = True
         b0 = None
-        rig.send(str(preset))
-        print(f"preset {preset}: running {n} breaths")
+        rig.send(item)
+        print(f"{'steady' if steady else 'preset'} {preset}: running {n} {what}")
         # Stop if rows stop arriving, or the breaths take far longer than they should.
-        deadline = time.time() + n * cfg["period_ms"][preset - 1] / 1000 + 30
+        # Steady flow first ramps to min: up to 4095 DAC counts at 300 per s.
+        if steady:
+            deadline = time.time() + 15 + n * cfg["ss_stroke_ms"][preset - 1] / 1000 + 30
+        else:
+            deadline = time.time() + n * cfg["period_ms"][preset - 1] / 1000 + 30
         last_row = time.time()
         while True:
             if time.time() > deadline:
@@ -238,10 +334,16 @@ def run_item(rig, preset, n, cond):
                 continue
             last_row = time.time()
             f = ln.split(",")
-            if b0 is None and int(f[2]) == preset - 1:
+            if b0 is None and int(f[2]) == mode:
                 b0 = int(f[1])
             res = an.add(ln)
-            if res:
+            if res and steady:
+                k = res["breath"] - b0 + 1
+                print(f"  stroke {k:3d}/{n} {res['dir']:>3}: mean flow {res['mean_flow_Lmin']:7.2f} L/min "
+                      f"({res['flow_pct']:6.2f} % of {res['target_Lmin']:g}), pot {res['pot_ml']:7.1f} mL, "
+                      f"measured {res['meas_ml']:7.1f} mL, leak {res['leak_ml']:5.1f} mL ({res['leak_pct']:5.2f} %), "
+                      f"lost rows {res['lost_rows']}, failed reads {res['failed_reads']}")
+            elif res:
                 k = res["breath"] - b0 + 1
                 print(f"  breath {k:3d}/{n}: push leak {res['push_leak_ml']:6.1f} mL "
                       f"({res['push_leak_pct']:5.2f} %), return leak {res['return_leak_ml']:6.1f} mL, "
@@ -266,13 +368,13 @@ def run_item(rig, preset, n, cond):
         print(f"aborted ({e!r}): saving what was recorded")
     meta["end"] = datetime.now().isoformat(timespec="seconds")
     meta["rows"] = len(rig.rows)
-    meta["breaths"] = an.done if an else []
-    save(start, preset, n, meta, rig)
+    meta["strokes" if steady else "breaths"] = an.done if an else []
+    save(start, ("s" if steady else "p") + str(preset), n, meta, rig)
     return meta
 
 
-def save(start, preset, n, meta, rig):
-    folder = HERE / "runs" / f"{start:%Y-%m-%d_%H%M%S}_p{preset}x{n}"
+def save(start, tag, n, meta, rig):
+    folder = HERE / "runs" / f"{start:%Y-%m-%d_%H%M%S}_{tag}x{n}"
     folder.mkdir(parents=True, exist_ok=True)
     (folder / "samples.csv").write_text(HEADER + "\n" + "\n".join(rig.rows) + "\n")
     (folder / "events.log").write_text("tick,line\n" + "\n".join(rig.events) + "\n")
@@ -281,6 +383,8 @@ def save(start, preset, n, meta, rig):
 
 
 def summary(meta):
+    if meta.get("steady"):
+        return steady_summary(meta)
     b = [x for x in meta["breaths"] if not math.isnan(x["push_leak_ml"])]
     if not b:
         return (f"preset {meta['preset']}: no complete breaths with good flow"
@@ -294,6 +398,26 @@ def summary(meta):
             + (" (ABORTED)" if meta["aborted"] else ""))
 
 
+def steady_summary(meta):
+    name = f"steady {meta['preset']}"
+    tail = " (ABORTED)" if meta["aborted"] else ""
+    lines = []
+    for d in ("out", "in"):
+        s = [x for x in meta["strokes"] if x["dir"] == d and not math.isnan(x["mean_flow_Lmin"])]
+        if not s:
+            continue
+        pct = [x["flow_pct"] for x in s]
+        sd = statistics.stdev(pct) if len(pct) > 1 else 0.0
+        leak = statistics.mean(x["leak_pct"] for x in s)
+        lines.append(f"{name} {d}: {len(s)} strokes, mean flow {statistics.mean(pct):.2f} +/- {sd:.2f} % "
+                     f"of {s[0]['target_Lmin']:g} L/min, leak {leak:.2f} %")
+    if not lines:
+        return (f"{name}: no complete strokes with good flow"
+                + (f" (ABORTED: {meta.get('error', '')})" if meta["aborted"] else ""))
+    lost = sum(x["lost_rows"] for x in meta["strokes"])
+    return "\n".join(lines) + f"\n{name}: lost rows {lost}{tail}"
+
+
 def main():
     if len(sys.argv) < 2:
         print("usage: python leaktest.py <port>. Ports found:")
@@ -304,7 +428,8 @@ def main():
     temp = ask("Room temperature (C)", last["temp_c"])
     p_msl = ask("MSL pressure (hPa)", last["p_msl_hpa"])
     LAST.write_text(json.dumps({"temp_c": temp, "p_msl_hpa": p_msl}))
-    queue = [(int(a), int(b)) for a, b in re.findall(r"([1-4])\s*x\s*(\d+)", input("Queue, e.g. 4x20, 1x10: "))]
+    queue = [(a.lower(), int(b)) for a, b in
+             re.findall(r"([sS]?[1-4])\s*x\s*(\d+)", input("Queue, e.g. 4x20, 1x10, s2x6 (s = steady strokes): "))]
     if not queue:
         print("no valid queue items")
         return
@@ -316,8 +441,8 @@ def main():
     rig.ser.reset_input_buffer()
     rig.buf = b""
     results = []
-    for preset, n in queue:
-        meta = run_item(rig, preset, n, cond)
+    for item, n in queue:
+        meta = run_item(rig, item, n, cond)
         results.append(meta)
         if meta["aborted"]:
             break
