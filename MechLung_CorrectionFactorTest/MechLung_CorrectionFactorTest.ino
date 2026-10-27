@@ -175,6 +175,12 @@ const uint32_t WIRE_CLOCK_HZ = 100000;
 const uint32_t WIRE1_CLOCK_HZ = 400000;
 const unsigned int WIRE_TIMEOUT_US = 3000;   // a 3-byte read takes about 0.4 ms at 100 kHz
 const unsigned int WIRE1_TIMEOUT_US = 1000;
+// Wire1 bus recovery at boot: a reset during an SDP811 read can leave the sensor
+// holding SDA low until power is removed (seen on the rig: mux_err every tick after
+// a reset, cleared only by a power cycle). Up to 9 SCL pulses let it finish its
+// byte and release SDA, then a STOP frees the bus. Pins from the UNO R4 WiFi variant.
+const uint8_t WIRE1_SDA = 27;
+const uint8_t WIRE1_SCL = 26;
 const int SENSOR_FAIL_TICKS = 5;         // consecutive failures before a restart
 // Flow averaging: FLOW_AVG_READS evenly spaced SFM3000 reads per tick, reported
 // as their mean. The tick's own read is the last; the extra reads fall at
@@ -691,6 +697,32 @@ float readFlow() {
   return slm;
 }
 
+// Free a Wire1 bus left held by a sensor. Run before Wire1.begin(), which hands
+// the pins back to the I2C peripheral. Lines are driven open drain: OUTPUT LOW to
+// pull down, INPUT to release (the pull-ups take them high). Returns the number of
+// SCL pulses needed (0: bus was free), or -1 if SDA is still held low.
+int recoverWire1() {
+  pinMode(WIRE1_SDA, INPUT);
+  pinMode(WIRE1_SCL, INPUT);
+  delayMicroseconds(5);
+  int pulses = 0;
+  while (digitalRead(WIRE1_SDA) == LOW && pulses < 9) {
+    pinMode(WIRE1_SCL, OUTPUT);
+    digitalWrite(WIRE1_SCL, LOW);
+    delayMicroseconds(5);
+    pinMode(WIRE1_SCL, INPUT);
+    delayMicroseconds(5);
+    pulses++;
+  }
+  // STOP: SDA low to high while SCL is high.
+  pinMode(WIRE1_SDA, OUTPUT);
+  digitalWrite(WIRE1_SDA, LOW);
+  delayMicroseconds(5);
+  pinMode(WIRE1_SDA, INPUT);
+  delayMicroseconds(5);
+  return digitalRead(WIRE1_SDA) == LOW ? -1 : pulses;
+}
+
 // Write the mux channel mask (1 << channel, or 0 for none). Returns true on success.
 bool muxWrite(uint8_t mask) {
   Wire1.beginTransmission(MUX_ADDR);
@@ -916,6 +948,12 @@ void setup() {
   Wire.begin();
   Wire.setClock(WIRE_CLOCK_HZ);
   Wire.setWireTimeout(WIRE_TIMEOUT_US);
+  int pulses = recoverWire1();
+  if (pulses != 0) {
+    PC.print("# Wire1 bus recovery: ");
+    if (pulses < 0) PC.println("SDA still held low, power cycle the rig");
+    else { PC.print(pulses); PC.println(" SCL pulses, bus freed"); }
+  }
   Wire1.begin();
   Wire1.setClock(WIRE1_CLOCK_HZ);
   Wire1.setWireTimeout(WIRE1_TIMEOUT_US);
