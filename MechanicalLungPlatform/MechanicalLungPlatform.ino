@@ -932,6 +932,12 @@ void loop() {
   }
   last_tick = tick;
   readSensors(tick);
+  // The first averaging slot (FLOW_AVG_SPACING_US) falls at about the end of the
+  // burst: take it before the row's send (about 0.8 ms) delays it. Already due:
+  // read now; not yet due: wait for it, at most to just past the slot. A failing
+  // sensor is skipped by sfmSample().
+  sfmSample();
+  while (sfm_extra == 0 && sfm_slot < FLOW_AVG_READS && micros() - sfm_tick_us < FLOW_AVG_SPACING_US + 100) sfmSample();
   sendRow(tick, breath, m, cmd);
   if (config_requested) {
     config_requested = false;

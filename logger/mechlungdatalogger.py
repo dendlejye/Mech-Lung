@@ -251,7 +251,8 @@ def tare(rig, cfg):
         for k in range(7):
             if r[P_RAW + k] is not None and cfg["sdp_scale"]:
                 press[k].append(r[P_RAW + k] / cfg["sdp_scale"])
-        pots.append(r[C["pot_raw"]] * cfg["pot_dac_per_adc"])
+        hist = (hist + [r[C["pot_raw"]]])[-Breaths.POT_MEDIAN:]   # median: a pot spike is not a move
+        pots.append(sorted(hist)[len(hist) // 2] * cfg["pot_dac_per_adc"])
     out = dict(flow_slm=statistics.mean(flow) if flow else math.nan)
     for k in range(7):
         out[f"p{k + 1}_Pa"] = statistics.mean(press[k]) if press[k] else math.nan
