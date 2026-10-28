@@ -1,5 +1,12 @@
 """leaktest.py - runs leak tests on MechLung_LeakTest.ino (and its
-MechLung_CorrectionFactorTest / MechLung_SteadyStateTest copies) and saves the data.
+MechLung_CorrectionFactorTest / MechLung_SteadyStateTest copies, and the
+breakouts/B4_blocked_leak blocked-outlet test) and saves the data.
+
+Blocked-outlet test (B4_blocked_leak, outlet plugged): queue items b1 to b5
+(bN x moves, e.g. "b1x4, b2x4, b3x4, b4x4, b5x4"). Each move gives the leak from
+the pot alone (piston rate at a steady pressure), the pressure it held, and the
+SFM3000 flow (leak downstream of the SFM3000). With two or more speeds the
+summary fits seal leak = k |p|^n per direction.
 
 Usage (Windows):  python leaktest.py COM3      (no port: lists the ports)
 Needs:            pip install pyserial
@@ -44,6 +51,16 @@ def station_pressure(p_msl_hpa):
     return p_msl_hpa * (1 - 2.25577e-5 * ELEVATION_M) ** 5.25588
 
 
+def slope(xs, ys):
+    """Least squares slope of ys against xs (nan with fewer than 2 points)."""
+    n = len(xs)
+    if n < 2:
+        return math.nan
+    mx, my = sum(xs) / n, sum(ys) / n
+    sxx = sum((x - mx) ** 2 for x in xs)
+    return sum((x - mx) * (y - my) for x, y in zip(xs, ys)) / sxx if sxx else math.nan
+
+
 def parse_fields(line):
     """'# config a=1 b=2,3' -> {'a': 1.0, 'b': [2.0, 3.0]}"""
     out = {}
@@ -61,6 +78,18 @@ class Rig:
         self.recording = False
         self.log_on = False
         self.buf = b""
+
+    def resync(self):
+        """Empty the input and drop the partial line the next read starts in: after
+        a reset the first bytes can be the tail of a # line that starts with a digit."""
+        self.ser.reset_input_buffer()
+        self.buf = b""
+        end = time.time() + 2
+        while time.time() < end:
+            chunk = self.ser.read(self.ser.in_waiting or 1)
+            if b"\n" in chunk:
+                self.buf = chunk.split(b"\n", 1)[1]
+                return
 
     def send(self, key):
         self.ser.write(key.encode())
@@ -301,41 +330,180 @@ class Strokes:
         return out
 
 
+class Blocked:
+    """Blocked-outlet test (B4_blocked_leak, modes 8 to 12): figures for each
+    move (one "breath" in the log: the move plus the dwell after it).
+
+    Outlet plugged, so at a steady pressure all the air the piston displaces
+    leaves past the seal or a joint: leak = piston rate. Over the middle of the
+    move (bl_trim of the move time off each end) a line is fitted to the pot
+    volume (POT_MEDIAN-point median, as Breaths) against time; its slope is the
+    piston rate. The commanded rate (cmd_dac slope) is given as a check of the
+    tracking. The leak is converted to ambient volume: the displaced air is at
+    cylinder pressure, so x (1 + p / P_station). No SFM3000 in it.
+
+    p_mean_Pa: mean of the good p1..p7 over the window (all read cylinder
+    pressure with the outlet plugged). p_slope_Pa_s: its drift over the window;
+    the pressure should be level, and a drift of 1 Pa/s stores only about
+    0.025 mL/s in 2.5 L. p_spread_Pa: largest difference between the sensors'
+    window means (should be ~0 with no flow). p_rest_Pa: mean pressure over the
+    last 0.5 s of the dwell (should be back near 0; if not, the tare or the
+    seal holds pressure).
+
+    downstream_Lmin: mean SFM3000 flow over the window, in the move's direction:
+    air leaking from the joints between the SFM3000 and the plug.
+    seal_Lmin = leak_Lmin - downstream_Lmin: past the seal and the joints
+    upstream of the SFM3000."""
+
+    POT_MEDIAN = Breaths.POT_MEDIAN
+    REST_S = 0.5
+
+    def __init__(self, cfg, tare, flow_conv, mode, p_station_hpa):
+        if "bl_move_ms" not in cfg:
+            raise RuntimeError("blocked items need B4_blocked_leak (no bl_move_ms in # config)")
+        self.c, self.mode = cfg, mode
+        self.flow = Breaths(cfg, tare, flow_conv).flow_lmin
+        self.p_tare = [tare.get(f"p{i}_Pa", math.nan) for i in range(1, 8)]
+        self.speed = cfg["bl_speed_mm_s"][mode - 8]
+        hz = cfg["sample_hz"]
+        self.move = cfg["bl_move_ms"] * hz / 1000
+        self.cycle = (cfg["bl_move_ms"] + cfg["bl_dwell_ms"]) * hz / 1000
+        self.p_st = p_station_hpa * 100.0
+        self.pot_hist = []
+        self.prev_tick = None
+        self.cur = None
+        self.done = []
+
+    def vol(self, dac):
+        c = self.c
+        return c["v_tidal_ml"] * (dac - c["centre_dac"]) / c["stroke_amp_dac"]
+
+    def add(self, row):
+        """Feed one row. Returns a finished move's figures, or None."""
+        f = row.split(",")
+        tick, breath, mode = int(f[0]), int(f[1]), int(f[2])
+        self.pot_hist = (self.pot_hist + [int(f[4])])[-self.POT_MEDIAN:]
+        pot = sorted(self.pot_hist)[len(self.pot_hist) // 2]
+        c = self.c
+        vp = self.vol(c["centre_dac"] + (pot - c["pot_raw_at_centre"]) * c["pot_dac_per_adc"])
+        vc = self.vol(int(f[3]))
+        dt = 1 if self.prev_tick is None else tick - self.prev_tick
+        self.prev_tick = tick
+        flow = self.flow(f[5])
+        p = [int(x) / c["sdp_scale"] - t if x != "" and c["sdp_scale"] else math.nan
+             for x, t in zip(f[6:13], self.p_tare)]
+        good = [x for x in p if not math.isnan(x)]
+        pm = sum(good) / len(good) if good else math.nan
+        finished = None
+        if self.cur and (breath != self.cur["breath"] or mode != self.mode):
+            if breath != self.cur["breath"] and mode == self.mode:   # completed, not aborted
+                finished = self.close()
+            self.cur = None
+        if mode != self.mode:
+            return finished
+        if self.cur is None:
+            self.cur = dict(breath=breath, t0=tick, out=int(f[3]) < c["centre_dac"],
+                            ts=[], vps=[], vcs=[], pts=[], pms=[], flows=[],
+                            psum=[0.0] * 7, pn=[0] * 7, rest=[], lost=0, failed=0)
+        b = self.cur
+        b["lost"] += dt - 1
+        b["failed"] += sum(1 for x in f[5:] if x == "")
+        t = tick - b["t0"]
+        trim = c["bl_trim"] * self.move
+        if trim <= t <= self.move - trim:
+            b["ts"].append(t)
+            b["vps"].append(vp)
+            b["vcs"].append(vc)
+            if not math.isnan(pm):
+                b["pts"].append(t)
+                b["pms"].append(pm)
+            if not math.isnan(flow):
+                b["flows"].append(flow)
+            for i, x in enumerate(p):
+                if not math.isnan(x):
+                    b["psum"][i] += x
+                    b["pn"][i] += 1
+        elif self.cycle - self.REST_S * c["sample_hz"] <= t < self.cycle and not math.isnan(pm):
+            b["rest"].append(pm)
+        return finished
+
+    def close(self):
+        b = self.cur
+        nan = math.nan
+        hz = self.c["sample_hz"]
+        sign = 1 if b["out"] else -1
+        pot_rate = slope(b["ts"], b["vps"]) * hz                 # mL/s, + = out
+        cmd_rate = slope(b["ts"], b["vcs"]) * hz
+        p_mean = statistics.mean(b["pms"]) if b["pms"] else nan
+        leak = abs(pot_rate) * 60 / 1000 * (1 + p_mean / self.p_st)   # L/min at ambient
+        down = sign * statistics.mean(b["flows"]) if b["flows"] else nan
+        means = [s / n for s, n in zip(b["psum"], b["pn"]) if n]
+        expected = self.move * (1 - 2 * self.c["bl_trim"])
+        out = dict(breath=b["breath"], dir="out" if b["out"] else "in", speed_mm_s=self.speed,
+                   pot_rate_mLs=pot_rate, cmd_rate_mLs=cmd_rate,
+                   track_pct=100 * pot_rate / cmd_rate if cmd_rate else nan,
+                   leak_Lmin=leak, downstream_Lmin=down, seal_Lmin=leak - down,
+                   p_mean_Pa=p_mean, p_slope_Pa_s=slope(b["pts"], b["pms"]) * hz,
+                   p_spread_Pa=max(means) - min(means) if len(means) > 1 else nan,
+                   p_rest_Pa=statistics.mean(b["rest"]) if b["rest"] else nan,
+                   p_sensors_Pa=[s / n if n else nan for s, n in zip(b["psum"], b["pn"])],
+                   window_rows=len(b["ts"]), flow_rows=len(b["flows"]),
+                   ok=len(b["ts"]) >= 0.9 * expected and len(b["pms"]) >= 0.9 * expected,
+                   lost_rows=b["lost"], failed_reads=b["failed"])
+        self.done.append(out)
+        return out
+
+
 def run_item(rig, item, n, cond):
-    """item: "1" to "4" (breathing preset) or "s1" to "s4" (steady flow)."""
-    steady = item.startswith("s")
+    """item: "1" to "4" (breathing preset), "s1" to "s4" (steady flow) or
+    "b1" to "b5" (blocked outlet, B4_blocked_leak)."""
+    kind = item[0] if item[0] in "sb" else "p"
+    steady, blocked = kind == "s", kind == "b"
     preset = int(item[-1])
-    mode = preset - 1 + (4 if steady else 0)
-    what = "strokes" if steady else "breaths"
+    mode = preset - 1 + {"p": 0, "s": 4, "b": 8}[kind]
+    what = {"p": "breaths", "s": "strokes", "b": "moves"}[kind]
     rig.rows, rig.events = [], []
     start = datetime.now()
-    meta = dict(cond, preset=preset, steady=steady, **{f"{what}_requested": n},
+    meta = dict(cond, preset=preset, steady=steady, blocked=blocked, **{f"{what}_requested": n},
                 start=start.isoformat(timespec="seconds"), aborted=False)
     an = None
     try:
         meta["tare"] = rig.idle_and_tare()
         meta["config"] = cfg = rig.log(True)
-        if steady:
+        if blocked:
+            an = Blocked(cfg, meta["tare"], cond["flow_conv"], mode, cond["p_station_hpa"])
+        elif steady:
             an = Strokes(cfg, meta["tare"], cond["flow_conv"], mode)
         else:
             an = Breaths(cfg, meta["tare"], cond["flow_conv"])
         rig.recording = True
         b0 = None
         rig.send(item)
-        print(f"{'steady' if steady else 'preset'} {preset}: running {n} {what}")
+        label = {"p": "preset", "s": "steady", "b": "blocked"}[kind]
+        print(f"{label} {preset}: running {n} {what}"
+              + (f" at {an.speed:g} mm/s" if blocked else ""))
         # Stop if rows stop arriving, or the breaths take far longer than they should.
         # Steady flow first ramps to min: up to 4095 DAC counts at 300 per s.
-        if steady:
+        # Blocked: ramps half a move to the start point at the test speed (at most
+        # ramp_dac_per_s), then dwells.
+        if blocked:
+            span = cfg["bl_span_dac"][preset - 1]
+            rate = min(cfg["ramp_dac_per_s"], span / (cfg["bl_move_ms"] / 1000))
+            deadline = (time.time() + span / 2 / rate
+                        + n * (cfg["bl_move_ms"] + cfg["bl_dwell_ms"]) / 1000 + 45)
+        elif steady:
             deadline = time.time() + 15 + n * max(cfg["ss_out_ms"][preset - 1], cfg["ss_in_ms"][preset - 1]) / 1000 + 30
         else:
             deadline = time.time() + n * cfg["period_ms"][preset - 1] / 1000 + 30
         last_row = time.time()
         while True:
             if time.time() > deadline:
-                raise TimeoutError(f"{n} breaths not complete by the expected time")
+                raise TimeoutError(f"{n} {what} not complete by the expected time")
             if time.time() - last_row > ROW_TIMEOUT_S:
                 raise TimeoutError(f"no log rows for {ROW_TIMEOUT_S} s")
             ln = rig.line()
+            if ln and ln.startswith("# pressure limit"):
+                raise RuntimeError(ln)
             if not ln or not ln[0].isdigit():
                 continue
             last_row = time.time()
@@ -343,7 +511,14 @@ def run_item(rig, item, n, cond):
             if b0 is None and int(f[2]) == mode:
                 b0 = int(f[1])
             res = an.add(ln)
-            if res and steady:
+            if res and blocked:
+                k = res["breath"] - b0 + 1
+                print(f"  move {k:3d}/{n} {res['dir']:>3}: p {res['p_mean_Pa']:7.2f} Pa "
+                      f"(drift {res['p_slope_Pa_s']:5.2f} Pa/s, rest {res['p_rest_Pa']:5.2f}), "
+                      f"leak {res['leak_Lmin']:6.3f} L/min, downstream {res['downstream_Lmin']:6.3f}, "
+                      f"seal {res['seal_Lmin']:6.3f}, tracking {res['track_pct']:6.2f} %, "
+                      f"lost rows {res['lost_rows']}{'' if res['ok'] else ', NOT OK'}")
+            elif res and steady:
                 k = res["breath"] - b0 + 1
                 print(f"  stroke {k:3d}/{n} {res['dir']:>3}: mean flow {res['mean_flow_Lmin']:7.2f} L/min "
                       f"({res['flow_pct']:6.2f} % of {res['target_Lmin']:g}), pot {res['pot_ml']:7.1f} mL, "
@@ -374,8 +549,8 @@ def run_item(rig, item, n, cond):
         print(f"aborted ({e!r}): saving what was recorded")
     meta["end"] = datetime.now().isoformat(timespec="seconds")
     meta["rows"] = len(rig.rows)
-    meta["strokes" if steady else "breaths"] = an.done if an else []
-    save(start, ("s" if steady else "p") + str(preset), n, meta, rig)
+    meta[what] = an.done if an else []
+    save(start, kind + str(preset), n, meta, rig)
     return meta
 
 
@@ -389,6 +564,8 @@ def save(start, tag, n, meta, rig):
 
 
 def summary(meta):
+    if meta.get("blocked"):
+        return blocked_summary(meta)
     if meta.get("steady"):
         return steady_summary(meta)
     b = [x for x in meta["breaths"] if not math.isnan(x["push_leak_ml"])]
@@ -424,6 +601,53 @@ def steady_summary(meta):
     return "\n".join(lines) + f"\n{name}: lost rows {lost}{tail}"
 
 
+def good_moves(meta):
+    """Moves that count: complete window, no lost rows, a pressure and a leak."""
+    return [x for x in meta.get("moves", []) if x["ok"] and x["lost_rows"] == 0
+            and not math.isnan(x["leak_Lmin"]) and not math.isnan(x["p_mean_Pa"])]
+
+
+def blocked_summary(meta):
+    name = f"blocked {meta['preset']}"
+    lines = []
+    for d in ("out", "in"):
+        s = [x for x in good_moves(meta) if x["dir"] == d]
+        if not s:
+            continue
+        def ms(key):
+            v = [x[key] for x in s if not math.isnan(x[key])]
+            return (statistics.mean(v) if v else math.nan,
+                    statistics.stdev(v) if len(v) > 1 else 0.0)
+        leak, leak_sd = ms("leak_Lmin")
+        lines.append(f"{name} {d}: {len(s)} moves at {s[0]['speed_mm_s']:g} mm/s, p {ms('p_mean_Pa')[0]:.2f} Pa, "
+                     f"leak {leak:.3f} +/- {leak_sd:.3f} L/min, downstream {ms('downstream_Lmin')[0]:.3f}, "
+                     f"seal {ms('seal_Lmin')[0]:.3f} L/min, rest p {ms('p_rest_Pa')[0]:.2f} Pa, "
+                     f"tracking {ms('track_pct')[0]:.2f} %")
+    if not lines:
+        return (f"{name}: no complete moves"
+                + (f" (ABORTED: {meta.get('error', '')})" if meta["aborted"] else ""))
+    return "\n".join(lines) + (" (ABORTED)" if meta["aborted"] else "")
+
+
+def blocked_fit(results):
+    """Seal leak = k |p|^n per direction, least squares in log-log over every
+    good move of every blocked item (needs two or more speeds)."""
+    out = []
+    for d in ("out", "in"):
+        pts = [(abs(x["p_mean_Pa"]), x["seal_Lmin"]) for m in results if m.get("blocked")
+               for x in good_moves(m) if x["dir"] == d and x["seal_Lmin"] > 0 and abs(x["p_mean_Pa"]) > 0]
+        speeds = {x["speed_mm_s"] for m in results if m.get("blocked") for x in good_moves(m) if x["dir"] == d}
+        if len(speeds) < 2:
+            continue
+        lx = [math.log(p) for p, _ in pts]
+        ly = [math.log(q) for _, q in pts]
+        n = slope(lx, ly)
+        k = math.exp(statistics.mean(ly) - n * statistics.mean(lx))
+        out.append(f"blocked fit {d}: seal leak = {k:.4g} x |p|^{n:.3f} L/min (p in Pa), "
+                   f"{len(pts)} moves, {min(p for p, _ in pts):.1f} to {max(p for p, _ in pts):.1f} Pa")
+    return out
+
+
 def main():
     if len(sys.argv) < 2:
         print("usage: python leaktest.py <port>. Ports found:")
@@ -435,7 +659,12 @@ def main():
     p_msl = ask("MSL pressure (hPa)", last["p_msl_hpa"])
     LAST.write_text(json.dumps({"temp_c": temp, "p_msl_hpa": p_msl}))
     queue = [(a.lower(), int(b)) for a, b in
-             re.findall(r"([sS]?[1-4])\s*x\s*(\d+)", input("Queue, e.g. 4x20, 1x10, s2x6 (s = steady strokes): "))]
+             re.findall(r"([sSbB]?\d)\s*x\s*(\d+)",
+                        input("Queue, e.g. 4x20, 1x10, s2x6 (s = steady strokes, b1-b5 = blocked moves): "))]
+    bad = [a for a, _ in queue if not re.fullmatch(r"[1-4]|s[1-4]|b[1-5]", a)]
+    if bad:
+        print(f"not valid queue items: {', '.join(bad)} (1-4, s1-s4, b1-b5)")
+        return
     if not queue:
         print("no valid queue items")
         return
@@ -444,8 +673,7 @@ def main():
                 flow_conv=((temp + 273.15) / 293.15) * (1013.0 / p_st), baud=BAUD)
     rig = Rig(sys.argv[1])
     time.sleep(3)                      # the board may reset when the port opens
-    rig.ser.reset_input_buffer()
-    rig.buf = b""
+    rig.resync()
     results = []
     for item, n in queue:
         meta = run_item(rig, item, n, cond)
@@ -455,6 +683,8 @@ def main():
     print()
     for meta in results:
         print(summary(meta))
+    for ln in blocked_fit(results):
+        print(ln)
 
 
 if __name__ == "__main__":

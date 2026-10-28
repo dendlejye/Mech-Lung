@@ -18,6 +18,7 @@ constants are finished; their sketches and `leaktest.py` stay as the record.
 | `breakouts/B1_serial_throughput/` | Serial throughput test and `b1_reader.py` (PC gap counter). |
 | `breakouts/B2_timer_dac/` | 1 kHz timer interrupt writing the DAC register directly. Disconnect the Jrk from A0 first. |
 | `breakouts/B3_plotter/` | Arduino IDE 2 Serial Plotter window size and nan display (test sketches only). |
+| `breakouts/B4_blocked_leak/` | Blocked-outlet leak test: seal leak against pressure from the pot alone, no SFM3000 in the figure. Run with `leaktest.py` (items `b1` to `b5`). |
 
 ## Running the platform
 
@@ -251,6 +252,54 @@ them: B1 (`LINE_BYTES = 68`), B2 and B3 first, set `TARE_SETTLE_MS` and
 `TARE_STILL_COUNTS`, then `python leaktest.py COM3`. Their per-stroke steady leak
 is the endpoint figure; their plot-mode figures use fixed T and P (20 C,
 1013 hPa) and add one tick of flow at the end of each stroke.
+
+## Blocked-outlet leak test (B4)
+
+Every leak figure above is pot volume minus SFM3000 volume, so it carries the
+SFM3000's scale error. With the outlet plugged nothing flows through the line,
+every SDP811 reads cylinder pressure, and once the pressure is level all the air
+the piston displaces leaves past the seal or a joint:
+
+    leak = piston rate (pot slope) x (1 + p / P_station)    (ambient L/min)
+
+Setup: plug the airway model's open end, so every SDP811 tap is upstream of the
+plug. Upload `B4_blocked_leak` (double-tap reset), then `python leaktest.py COM8`
+with a queue such as `b1x4, b2x4, b3x4, b4x4, b5x4` (about 10 min).
+
+- `b1` to `b5`: 0.25, 0.5, 1, 2, 4 mm/s (0.2 to 3.1 L/min of displacement;
+  `BL_SPEED_MM_S`). Each item ramps to centre less half a move, dwells 3 s,
+  then out move 20 s, dwell 3 s, in move 20 s, dwell 3 s, ... The ramps (H and
+  to the start point) run at the test speed, so they build no more pressure than
+  the test.
+- Per move (`moves` in `meta.json`): `leak_Lmin` (pot slope over the middle 80 %
+  of the move), `p_mean_Pa` (mean of p1 to p7), `downstream_Lmin` (SFM3000 flow:
+  leaking from the joints between the SFM3000 and the plug), `seal_Lmin` =
+  leak - downstream (seal and joints upstream of the SFM3000), `p_slope_Pa_s`
+  (should be ~0: level pressure), `p_rest_Pa` (end of the dwell, should be ~0),
+  `p_spread_Pa` (sensor to sensor, ~0 with no flow), `track_pct` (pot rate
+  against commanded rate).
+- The summary fits `seal leak = k |p|^n` per direction over all `b` items.
+  Feed it the cylinder pressure of an open run to predict that run's seal leak;
+  the open-run leak figure minus that prediction is the SFM3000 and geometry
+  scale error.
+- Pressure limit: any SDP811 past +-450 Pa (`BL_P_LIMIT_PA`) while the piston
+  moves stops the command where it is and `leaktest.py` stops the queue (speeds
+  run in ascending order, so the lower ones are saved). Unplug, then H.
+- The leak figure depends only on the pot scale: `ACTUATOR_STROKE_MM`
+  (1 mm = 0.45 %) and `CYLINDER_DIAMETER_MM` (0.1 mm = 0.15 %).
+
+At 0.25 mm/s the command moves 1 DAC count every 0.22 s; if the Jrk moves the
+piston in steps, the pressure ripples but the window figures still balance
+(the move is long against the cylinder's time constant). Check `p_slope_Pa_s`
+and `track_pct`.
+
+Tested on the PC only: the sketch compiled against stand-ins for the Arduino
+core, Wire, Sensirion Core and the timer, run against a simulated plugged
+cylinder (seal 0.57 |p|^0.8 mL/s, downstream joint 0.01 p mL/s, 50 ms piston
+lag, pot and sensor noise) with `leaktest.py` over a pseudo-terminal: fit
+k 0.033 to 0.034 (true 0.034 L/min), n 0.80 to 0.81 (true 0.80); with a tighter
+seal (k x 0.18) the limit stopped `b4` and the fit from `b1` and `b3` was
+k 0.0059 (true 0.0060), n 0.80.
 
 ## Status
 
