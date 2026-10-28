@@ -9,7 +9,7 @@ driven actuator, an SFM3000 flow sensor and seven SDP811 pressure sensors.
 |---|---|
 | `MechLung_LeakTest/` | Merged sketch: actuator, flow and pressure at 100 Hz, per-breath volume and leak check. Plot mode for the Arduino IDE Serial Plotter; log mode (key L) streams raw 100 Hz rows for `leaktest.py`. |
 | `MechLung_CorrectionFactorTest/` | `MechLung_LeakTest` with the per-preset flow correction applied, so peak flow at the SFM3000 meets each preset's target. Same keys and log format. Needs the `Sensirion Core` library (Library Manager; compiles with 0.7.3) for the SFM3000 / SDP811 I2C framing and CRC; `MechLung_LeakTest` has no library dependency. |
-| `MechLung_SteadyStateTest/` | `MechLung_CorrectionFactorTest` with the demo sine replaced by four steady flow modes (keys `s1` to `s4`: 10, 15, 20, 30 L/min, constant-speed strokes min to max and back). Presets 1 to 4 keep their correction; steady modes have none yet. `MechLung_CorrectionFactorTest` stays as the backup. |
+| `MechLung_SteadyStateTest/` | `MechLung_CorrectionFactorTest` with the demo sine replaced by four steady flow modes (keys `s1` to `s4`: 10, 15, 20, 30 L/min, constant-speed strokes min to max and back). Presets 1 to 4 keep their correction; steady modes have their own (`SS_GAIN_OUT`, `SS_GAIN_IN`). `MechLung_CorrectionFactorTest` stays as the backup. |
 | `logger/leaktest.py` | Runs leak tests from the PC (Windows, Python 3 + pyserial): asks T, P and a queue, drives the sketch, saves each run under `logger/runs/`. |
 | `breakouts/B1_serial_throughput/` | Serial throughput test and `b1_reader.py` (PC gap counter). Sets `SERIAL_BAUD`. |
 | `breakouts/B2_timer_dac/` | 1 kHz timer interrupt writing the DAC register directly. Disconnect the Jrk from A0 first. |
@@ -99,8 +99,25 @@ as `..._s<preset>x<N>/`, with the per-stroke figures under `strokes` in `meta.js
 Per stroke: mean flow over the middle 80 % of the stroke time (`ss_trim` = 0.10
 off each end, clear of the reversals) as a % of the target, and the volume moved
 by the piston (pot) and through the SFM3000, with leak = the difference. The
-summary gives out and in strokes separately. No correction is applied in steady
-flow yet: target / mean flow from these runs gives the gains to fit.
+summary gives out and in strokes separately.
+
+Steady flow correction (`SS_GAIN_ON`, `SS_GAIN_OUT`, `SS_GAIN_IN` in the sketch,
+logged as `ss_gain_out` and `ss_gain_in`, with the corrected stroke times
+`ss_out_ms` and `ss_in_ms`) scales the piston speed of each stroke so the mean
+mid-stroke flow at the SFM3000 meets the target. The stroke length is unchanged,
+so out and in strokes just take different times. Gains = target / measured from
+the uncorrected 28 Oct 11:03 runs:
+
+| Mode | Target L/min | Out measured | In measured | `SS_GAIN_OUT` | `SS_GAIN_IN` |
+|---|---|---|---|---|---|
+| s1 | 10 | 98.33 % | 98.73 % | 1.0170 | 1.0129 |
+| s2 | 15 | 97.43 % | 97.74 % | 1.0263 | 1.0231 |
+| s3 | 20 | 96.99 % | 97.28 % | 1.0310 | 1.0280 |
+| s4 | 30 | 95.73 % | 95.90 % | 1.0446 | 1.0428 |
+
+Stroke to stroke spread was 0.1 % or less. The leak grows with flow, so the
+faster corrected strokes may land up to about 0.2 % short at s4: check with a
+corrected run.
 
 ## Status
 

@@ -5,8 +5,9 @@
   flow modes (keys s1 to s4, same flows as presets 1 to 4). The piston moves
   at constant speed from min to max and back over the calibrated Jrk window,
   so the flow holds at the target for each whole stroke except the reversals.
-  Steady modes have no flow correction yet. MechLung_CorrectionFactorTest
-  stays as the backup. Same log format; leaktest.py runs all three sketches.
+  Steady modes have their own flow correction (SS_GAIN_ON, SS_GAIN_OUT,
+  SS_GAIN_IN). MechLung_CorrectionFactorTest stays as the backup. Same log
+  format; leaktest.py runs all three sketches.
 
   Runs the actuator breathing profile, the SFM3000 flow sensor and seven
   SDP811 pressure sensors together, and checks the volume delivered each
@@ -28,8 +29,9 @@
     1 2 3 4      breathe at a peak flow of 10, 15, 20 or 30 L/min
     s1 s2 s3 s4  steady flow of 10, 15, 20 or 30 L/min: ramp to min at
                  RAMP_RATE_DAC_PER_S, then constant-speed strokes min -> max
-                 -> min until H. One stroke takes ss_stroke_ms (# config):
-                 about 17.4, 11.6, 8.7 and 5.8 s for the 2.9 L stroke.
+                 -> min until H. Strokes take ss_out_ms and ss_in_ms
+                 (# config): about 17.4, 11.6, 8.7 and 5.8 s for the 2.9 L
+                 stroke, less the flow correction.
     max min      go to that end of the calibrated Jrk window and hold
     H            stop: return to centre at RAMP_RATE_DAC_PER_S. Tares if already idle.
     p            cycle plot set
@@ -153,10 +155,21 @@ const unsigned long SERIAL_BAUD = 12000000; // nominal USB full speed: only sets
 const unsigned long SERIAL_BAUD = 115200;   // set from breakout sketch B1
 #endif
 
-// Steady flow (keys s1 to s4): same flows as the presets, no correction yet.
+// Steady flow (keys s1 to s4): same flows as the presets, own correction below.
 // The stroke runs over the calibrated Jrk window less SS_MARGIN_JRK at each end.
 const int SS_MARGIN_JRK = 0;               // stay this far from the Jrk window ends
 const float SS_TRIM_FRAC = 0.10f;          // # stroke mean flow leaves this much of the stroke time off each end
+// Steady flow correction: scales the piston speed of each stroke so the mean
+// flow at the SFM3000 over the middle of the stroke meets the target, making up
+// for the seal leak (target / measured, uncorrected runs of 28 Oct 2026 11:03,
+// model connected, 20.2 C, 1021.4 hPa MSL; stroke to stroke spread 0.1 % or less).
+// The stroke length stays the full window, so only the stroke time changes:
+// out (min -> max) takes the uncorrected stroke time / SS_GAIN_OUT, in (max -> min) / SS_GAIN_IN.
+// The leak grows with flow, so a corrected stroke may land up to about 0.2 %
+// short at s4; re-check with a corrected run. SS_GAIN_ON false: no correction.
+const bool SS_GAIN_ON = true;
+const float SS_GAIN_OUT[4] = {1.0170f, 1.0263f, 1.0310f, 1.0446f};
+const float SS_GAIN_IN[4] = {1.0129f, 1.0231f, 1.0280f, 1.0428f};
 
 // Smoothing: two cascaded low-pass stages, delay about 1 / (PI * CMD_FILTER_HZ)
 // (64 ms at 5 Hz). 0 = off.
@@ -242,7 +255,8 @@ float preset_amp_dac[4];       // stroke amplitude each preset commands (x GAIN_
 int corrected_centre_dac = 0;
 float filter_alpha = 1.0f;     // per-update filter coefficient (1 = no filter)
 int ss_min_dac = 0, ss_max_dac = 0;   // steady stroke ends
-unsigned long ss_stroke_ms[4];        // one steady stroke, min to max or back
+unsigned long ss_out_ms[4];           // one steady stroke, min to max (x 1 / SS_GAIN_OUT)
+unsigned long ss_in_ms[4];            // max back to min (x 1 / SS_GAIN_IN)
 float ss_stroke_ml = 0.0f;            // volume of one steady stroke
 
 // Shared with the timer ISR. loop() changes these only with interrupts off.
@@ -318,7 +332,7 @@ int cmd_len = 0;
 unsigned long cmd_ms = 0;
 
 // ---- Serial writer: lines are queued, one is sent per sample tick ----
-const int LINE_LEN = 480;              // the # config line is about 390 characters
+const int LINE_LEN = 560;              // the # config line is about 500 characters
 const int QUEUE_LEN = 8;
 struct Line : public Print {
   char s[LINE_LEN];
@@ -457,7 +471,9 @@ void initPresets() {
   ss_stroke_ml = ss_mm * k_area;
   for (int i = 0; i < 4; i++) {
     float Q_mls = preset_q_peak_Lmin[i] * 1000.0f / 60.0f;
-    ss_stroke_ms[i] = (unsigned long)(ss_stroke_ml / Q_mls * 1000.0f + 0.5f);
+    float t_ms = ss_stroke_ml / Q_mls * 1000.0f;
+    ss_out_ms[i] = (unsigned long)(t_ms / (SS_GAIN_ON ? SS_GAIN_OUT[i] : 1.0f) + 0.5f);
+    ss_in_ms[i] = (unsigned long)(t_ms / (SS_GAIN_ON ? SS_GAIN_IN[i] : 1.0f) + 0.5f);
   }
 }
 
@@ -474,13 +490,13 @@ void stepBreathing(float phi) {
   outputProfile((float)corrected_centre_dac + preset_amp_dac[i] * pos_norm);
 }
 
-// Steady flow: constant speed min -> max over the first stroke, back over the
-// second. phi_ms is the time into the cycle, in milliseconds.
+// Steady flow: constant speed min -> max over the out stroke, back over the
+// in stroke. phi_ms is the time into the cycle, in milliseconds.
 void stepSteady(unsigned long phi_ms) {
-  float T = (float)ss_stroke_ms[current_preset - MODE_SS];
+  int i = current_preset - MODE_SS;
   float span = (float)(ss_max_dac - ss_min_dac);
-  float x = (float)phi_ms / T;
-  float pos = (x <= 1.0f) ? x : 2.0f - x;
+  float pos = (phi_ms <= ss_out_ms[i]) ? (float)phi_ms / ss_out_ms[i]
+                                       : 1.0f - (float)(phi_ms - ss_out_ms[i]) / ss_in_ms[i];
   outputProfile((float)ss_min_dac + span * pos);
 }
 
@@ -537,10 +553,10 @@ void onTick(timer_callback_args_t *) {
   } else if (m == MODE_GOTO) {
     stepGoto();
   } else if (m >= MODE_SS) {        // steady: a new "breath" at each end
-    unsigned long stroke_ms = ss_stroke_ms[m - MODE_SS];
+    unsigned long out_ms = ss_out_ms[m - MODE_SS];
     stepSteady(phase_ms);
-    if (++phase_ms >= 2 * stroke_ms) phase_ms = 0;
-    if (phase_ms == 0 || phase_ms == stroke_ms) breath_count++;
+    if (++phase_ms >= out_ms + ss_in_ms[m - MODE_SS]) phase_ms = 0;
+    if (phase_ms == 0 || phase_ms == out_ms) breath_count++;
   } else if (m >= 0) {
     stepBreathing(phase_ms * 1000.0f);
     if (++phase_ms >= (unsigned long)(preset_period_us[m] / 1000.0f + 0.5f)) {
@@ -627,10 +643,25 @@ void printConfig() {
     if (i > 0) L.print(',');
     L.print(preset_q_peak_Lmin[i], 1);
   }
-  L.print(" ss_stroke_ms=");
+  L.print(" ss_gain_out=");
   for (int i = 0; i < 4; i++) {
     if (i > 0) L.print(',');
-    L.print(ss_stroke_ms[i]);
+    L.print(SS_GAIN_ON ? SS_GAIN_OUT[i] : 1.0f, 4);
+  }
+  L.print(" ss_gain_in=");
+  for (int i = 0; i < 4; i++) {
+    if (i > 0) L.print(',');
+    L.print(SS_GAIN_ON ? SS_GAIN_IN[i] : 1.0f, 4);
+  }
+  L.print(" ss_out_ms=");
+  for (int i = 0; i < 4; i++) {
+    if (i > 0) L.print(',');
+    L.print(ss_out_ms[i]);
+  }
+  L.print(" ss_in_ms=");
+  for (int i = 0; i < 4; i++) {
+    if (i > 0) L.print(',');
+    L.print(ss_in_ms[i]);
   }
   L.print(" ss_stroke_ml=");
   L.print(ss_stroke_ml, 1);
@@ -1193,7 +1224,8 @@ void loop() {
     if (m >= MODE_SS) {
       ss_last_cmd = cmd;
       ss_last_vp = vp;
-      float T = ss_stroke_ms[m - MODE_SS] / 1000.0f;
+      bool out = ss_cmd0 < corrected_centre_dac;   // out strokes start at min
+      float T = (out ? ss_out_ms[m - MODE_SS] : ss_in_ms[m - MODE_SS]) / 1000.0f;
       if (t >= SS_TRIM_FRAC * T && t <= (1.0f - SS_TRIM_FRAC) * T) {
         ss_sum_flow += flow;
         ss_n++;

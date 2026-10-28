@@ -226,13 +226,17 @@ class Strokes:
     LAG = Breaths.LAG
 
     def __init__(self, cfg, tare, flow_conv, mode):
-        if "ss_stroke_ms" not in cfg:
-            raise RuntimeError("steady flow needs MechLung_SteadyStateTest (no ss_stroke_ms in # config)")
+        if "ss_out_ms" not in cfg and "ss_stroke_ms" not in cfg:
+            raise RuntimeError("steady flow needs MechLung_SteadyStateTest (no ss_out_ms in # config)")
         self.c, self.mode = cfg, mode
         self.flow = Breaths(cfg, tare, flow_conv).flow_lmin
         i = mode - 4
         self.q = cfg["ss_q_Lmin"][i]
-        self.stroke_ticks = cfg["ss_stroke_ms"][i] * cfg["sample_hz"] / 1000
+        # Out and in strokes differ once corrected; ss_stroke_ms: uncorrected sketch, both the same.
+        out_ms = cfg["ss_out_ms"][i] if "ss_out_ms" in cfg else cfg["ss_stroke_ms"][i]
+        in_ms = cfg["ss_in_ms"][i] if "ss_in_ms" in cfg else cfg["ss_stroke_ms"][i]
+        self.out_ticks = out_ms * cfg["sample_hz"] / 1000
+        self.in_ticks = in_ms * cfg["sample_hz"] / 1000
         self.pot_hist = []
         self.prev_tick = None
         self.cum = 0.0                  # flow volume since the first row, nan rows count 0
@@ -265,16 +269,18 @@ class Strokes:
         if mode != self.mode:
             return finished
         if self.cur is None:
+            out = int(f[3]) < c["centre_dac"]             # out strokes start at min
             self.cur = dict(breath=breath, t0=tick, vp0=vp, vm0=self.cum_hist[0], sum=0.0, n=0,
-                            lost=0, failed=0, flow_bad=any(self.nan_hist))
+                            lost=0, failed=0, flow_bad=any(self.nan_hist),
+                            ticks=self.out_ticks if out else self.in_ticks)
         b = self.cur
         b["flow_bad"] |= bad
         b["lost"] += dt - 1
         b["failed"] += sum(1 for x in f[5:] if x == "")
         b["vp"], b["vm"] = vp, self.cum_hist[0]
         t = tick - b["t0"]
-        trim = c["ss_trim"] * self.stroke_ticks
-        if trim <= t <= self.stroke_ticks - trim and not bad:
+        trim = c["ss_trim"] * b["ticks"]
+        if trim <= t <= b["ticks"] - trim and not bad:
             b["sum"] += flow
             b["n"] += 1
         return finished
@@ -320,7 +326,7 @@ def run_item(rig, item, n, cond):
         # Stop if rows stop arriving, or the breaths take far longer than they should.
         # Steady flow first ramps to min: up to 4095 DAC counts at 300 per s.
         if steady:
-            deadline = time.time() + 15 + n * cfg["ss_stroke_ms"][preset - 1] / 1000 + 30
+            deadline = time.time() + 15 + n * max(cfg["ss_out_ms"][preset - 1], cfg["ss_in_ms"][preset - 1]) / 1000 + 30
         else:
             deadline = time.time() + n * cfg["period_ms"][preset - 1] / 1000 + 30
         last_row = time.time()
