@@ -222,8 +222,12 @@ two: the intercept at zero pressure is the scale error.
 ## Flow corrections
 
 Breathing presets (`FLOW_GAIN_ON`, `GAIN_EXP`, `GAIN_INSP`) scale each preset so
-the peak flow at the SFM3000 meets the target, from the uncorrected 28 Oct 08:47
-model runs. `GAIN_EXP` scales the stroke; the inspiration time is scaled by
+the peak flow at the SFM3000 meets the target (29 Oct 2026, non-MAD model, Jrk
+P 8). Peak flow is a half-sine of the commanded length fitted to the middle 60 %
+of each phase with its timing free: the raw maximum reads 5 to 90 % high from
+push ripple, and the measured flow trails the command by about 0.15 s after the
+stall at each reversal. Raising `GAIN_EXP` also raises the tidal volume (preset 1
+about 5 %). `GAIN_EXP` scales the stroke; the inspiration time is scaled by
 `GAIN_EXP / GAIN_INSP`.
 
 Steady flow (`SS_GAIN_ON`, `SS_GAIN_OUT`, `SS_GAIN_IN`) scales the piston speed

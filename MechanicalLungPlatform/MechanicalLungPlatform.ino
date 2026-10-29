@@ -105,14 +105,19 @@ const float V_TIDAL_ML = 700.0f;              // volume moved per breath
 const float IE_EXP_PARTS = 2.0f;              // expiration : inspiration time ratio
 const float IE_INSP_PARTS = 1.0f;
 float preset_q_peak_Lmin[4] = {10.0f, 15.0f, 20.0f, 30.0f};  // keys 1 to 4, and s1 to s4
-// Flow correction for the breathing presets (target / measured peak flow at the
-// SFM3000, uncorrected runs of 28 Oct 2026 08:47, model connected).
+// Flow correction for the breathing presets: peak flow at the SFM3000 meets the
+// target. Peak flow is the amplitude of a half-sine of the commanded length fitted
+// to the middle 60 % of each phase with its timing free (not the raw maximum,
+// which is push ripple). Interpolated between the 29 Oct 2026 full-suite gains
+// and the 14:28 check run (non-MAD model, Jrk P 8, 21.7 C); that check read
+// +0.4 to +0.7 % except preset 1 and 2 expiration (+3.4, +1.8 %), so these move
+// presets 1 and 2 expiration most. Expect about +-0.5 % drift over a session.
 //   GAIN_EXP scales the stroke amplitude, so expiratory peak flow x GAIN_EXP;
 //   inspiration time is scaled by GAIN_EXP / GAIN_INSP, so inspiratory peak
 //   flow x GAIN_INSP. FLOW_GAIN_ON false: no correction (all gains 1).
 const bool FLOW_GAIN_ON = true;
-const float GAIN_EXP[4] = {1.008f, 1.003f, 1.005f, 1.014f};
-const float GAIN_INSP[4] = {0.984f, 0.993f, 0.997f, 1.012f};
+const float GAIN_EXP[4] = {1.050f, 1.017f, 1.013f, 1.020f};
+const float GAIN_INSP[4] = {1.008f, 1.017f, 1.022f, 1.035f};
 
 // Timing.
 const int DAC_UPDATE_HZ = 1000;       // timer rate: DAC written every 1 ms
