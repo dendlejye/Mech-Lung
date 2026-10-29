@@ -52,7 +52,10 @@ Each item is saved in `logger/runs/<date>_<hhmmss>_<item>/`:
 The logger converts MSL to station pressure with `ELEVATION_M = 27` (VU
 Footscray Park, Building D level 3: RL 26.1 m plus bench).
 
-`TARE_SETTLE_S` in the logger is still a PLACEHOLDER: set it from pot noise at rest.
+`TARE_SETTLE_S` (2 s) is confirmed: on 29 Oct 2026 all 20 tares zeroed cleanly (flow
+0.004 to 0.015 slm, every SDP811 within +-0.1 Pa). The tare's `pot_spread_dac` in
+`meta.json` is unreliable: pot spikes at rest can read hundreds of DAC counts while the
+piston is still (6 of 20 tares, up to 1155). Judge a tare by its flow zero.
 
 ## PC link: native USB
 

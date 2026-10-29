@@ -37,7 +37,8 @@ ELEVATION_M = 27       # VU Footscray Park, Building D level 3: RL 26.1 m + abou
 ROW_TIMEOUT_S = 2      # rows normally arrive every 10 ms
 TRIM = 0.10            # steady figures leave this fraction of the move time off each end
 TRIM_INNER = 0.20      # second mean flow: if it differs from the TRIM one, the reversal is still settling
-TARE_SETTLE_S = 2.0    # PLACEHOLDER: pot still for this long before the tare; set from pot noise at rest
+TARE_SETTLE_S = 2.0    # pot still for this long before the tare; confirmed 29 Oct 2026: 20 tares, flow zeros
+                       # 0.004 to 0.015 slm, every SDP811 within +-0.1 Pa
 TARE_STILL_DAC = 15.0  # DAC counts: pot noise at rest spans 9 to 11 (rig, 26 Oct 2026)
 TARE_ROWS = 100        # rows averaged for the tare (1 s)
 TARE_FLOW_MAX_SLM = 1.0  # good tares read 0.004 to 0.009 slm; more is not a zero
@@ -256,6 +257,9 @@ def tare(rig, cfg):
     out = dict(flow_slm=statistics.mean(flow) if flow else math.nan)
     for k in range(7):
         out[f"p{k + 1}_Pa"] = statistics.mean(press[k]) if press[k] else math.nan
+    # Pot spread over the tare second: UNRELIABLE as a stillness check. On 29 Oct 2026, 6 of 20
+    # tares read 240 to 1155 DAC counts while their flow and pressure zeros were clean: pot
+    # spikes at rest that the median lets through. Judge stillness from flow_slm instead.
     out["pot_spread_dac"] = max(pots) - min(pots)
     out["flow_rows"] = len(flow)
     if math.isnan(out["flow_slm"]):

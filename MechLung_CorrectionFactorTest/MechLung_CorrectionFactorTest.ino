@@ -157,7 +157,7 @@ const float SFM3000_MAX_SLM = 200.0f;   // sensor range: a word outside it is a 
 // Tare: after the pot stays within TARE_STILL_COUNTS for TARE_SETTLE_MS,
 // average TARE_SAMPLES of flow and of each pressure.
 const int TARE_SAMPLES = 100;
-const unsigned long TARE_SETTLE_MS = 2000;  // PLACEHOLDER: set on the bench from pot noise at rest
+const unsigned long TARE_SETTLE_MS = 2000;  // confirmed on the rig, 29 Oct 2026 (see README)
 const float TARE_STILL_COUNTS = 15.0f;      // DAC counts: pot noise at rest spans 9 to 11 (rig, 26 Oct 2026)
 // A flow tare outside +-TARE_FLOW_MAX_SLM is not a zero (good tares read 0.004 to
 // 0.009 slm): the line reads "# tare rejected ...", the flow tare is nan, so flow
