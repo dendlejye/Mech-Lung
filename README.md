@@ -273,7 +273,8 @@ with a queue such as `b1x4, b2x4, b3x4, b4x4, b5x4` (about 10 min).
   the test.
 - Per move (`moves` in `meta.json`): `leak_Lmin` (pot slope over the middle 80 %
   of the move), `p_mean_Pa` (mean of p1 to p7), `downstream_Lmin` (SFM3000 flow:
-  leaking from the joints between the SFM3000 and the plug), `seal_Lmin` =
+  air leaving between the SFM3000 and the plug, mainly through the seven
+  flow-through SDP811s, plus any joint leak there), `seal_Lmin` =
   leak - downstream (seal and joints upstream of the SFM3000), `p_slope_Pa_s`
   (should be ~0: level pressure), `p_rest_Pa` (end of the dwell, should be ~0),
   `p_spread_Pa` (sensor to sensor, ~0 with no flow), `track_pct` (pot rate
@@ -285,6 +286,13 @@ with a queue such as `b1x4, b2x4, b3x4, b4x4, b5x4` (about 10 min).
 - Pressure limit: any SDP811 past +-450 Pa (`BL_P_LIMIT_PA`) while the piston
   moves stops the command where it is and `leaktest.py` stops the queue (speeds
   run in ascending order, so the lower ones are saved). Unplug, then H.
+- SDP811 flow-through: each SDP811 passes air from its tap to its open port,
+  about 33-43 sccm at 100 Pa and 90-115 sccm at 500 Pa (Sensirion DP
+  Engineering Guide, wide device spread). The summary gives `downstream_Lmin`
+  per sensor to compare; well above that points to a joint leak. The same
+  bleed runs in normal tests: the flow leaving the model outlet is the SFM3000
+  flow less the seven sensor flows, and the B4 `downstream_Lmin` against
+  `p_mean_Pa` measures that curve.
 - The leak figure depends only on the pot scale: `ACTUATOR_STROKE_MM`
   (1 mm = 0.45 %) and `CYLINDER_DIAMETER_MM` (0.1 mm = 0.15 %).
 
@@ -295,7 +303,7 @@ and `track_pct`.
 
 Tested on the PC only: the sketch compiled against stand-ins for the Arduino
 core, Wire, Sensirion Core and the timer, run against a simulated plugged
-cylinder (seal 0.57 |p|^0.8 mL/s, downstream joint 0.01 p mL/s, 50 ms piston
+cylinder (seal 0.57 |p|^0.8 mL/s, downstream bleed 0.01 p mL/s, 50 ms piston
 lag, pot and sensor noise) with `leaktest.py` over a pseudo-terminal: fit
 k 0.033 to 0.034 (true 0.034 L/min), n 0.80 to 0.81 (true 0.80); with a tighter
 seal (k x 0.18) the limit stopped `b4` and the fit from `b1` and `b3` was

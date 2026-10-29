@@ -8,8 +8,9 @@
 
       leak = piston area x piston speed (from the pot), at the measured pressure
 
-  with no SFM3000 in the figure. The SFM3000 stays in line: anything it reads
-  is leaking from the joints between it and the plug (downstream of it).
+  with no SFM3000 in the figure. The SFM3000 stays in line and reads the air
+  leaving between it and the plug: mainly the flow through the seven SDP811s
+  (flow-through sensors, one port open to air), plus any joint leak there.
   Repeat at several speeds, both directions, for leak against pressure.
 
   Forked from MechLung_SteadyStateTest: same sensors, tare, log rows and

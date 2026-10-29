@@ -5,7 +5,8 @@ breakouts/B4_blocked_leak blocked-outlet test) and saves the data.
 Blocked-outlet test (B4_blocked_leak, outlet plugged): queue items b1 to b5
 (bN x moves, e.g. "b1x4, b2x4, b3x4, b4x4, b5x4"). Each move gives the leak from
 the pot alone (piston rate at a steady pressure), the pressure it held, and the
-SFM3000 flow (leak downstream of the SFM3000). With two or more speeds the
+SFM3000 flow (air leaving downstream of it: the SDP811s' flow-through and any
+joint between the SFM3000 and the plug). With two or more speeds the
 summary fits seal leak = k |p|^n per direction.
 
 Usage (Windows):  python leaktest.py COM3      (no port: lists the ports)
@@ -351,7 +352,10 @@ class Blocked:
     seal holds pressure).
 
     downstream_Lmin: mean SFM3000 flow over the window, in the move's direction:
-    air leaking from the joints between the SFM3000 and the plug.
+    air leaving between the SFM3000 and the plug. The SDP811s are flow-through
+    sensors with one port open to air, so this is mainly the flow through the
+    seven of them (Sensirion: about 33-43 sccm each at 100 Pa, 90-115 at
+    500 Pa, wide device spread), plus any joint leak there.
     seal_Lmin = leak_Lmin - downstream_Lmin: past the seal and the joints
     upstream of the SFM3000."""
 
@@ -620,7 +624,8 @@ def blocked_summary(meta):
                     statistics.stdev(v) if len(v) > 1 else 0.0)
         leak, leak_sd = ms("leak_Lmin")
         lines.append(f"{name} {d}: {len(s)} moves at {s[0]['speed_mm_s']:g} mm/s, p {ms('p_mean_Pa')[0]:.2f} Pa, "
-                     f"leak {leak:.3f} +/- {leak_sd:.3f} L/min, downstream {ms('downstream_Lmin')[0]:.3f}, "
+                     f"leak {leak:.3f} +/- {leak_sd:.3f} L/min, downstream {ms('downstream_Lmin')[0]:.3f} "
+                     f"({ms('downstream_Lmin')[0] * 1000 / 7:.0f} sccm per SDP811), "
                      f"seal {ms('seal_Lmin')[0]:.3f} L/min, rest p {ms('p_rest_Pa')[0]:.2f} Pa, "
                      f"tracking {ms('track_pct')[0]:.2f} %")
     if not lines:
