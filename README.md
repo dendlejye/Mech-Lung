@@ -13,7 +13,9 @@ constants are finished; their sketches and `leaktest.py` stay as the record.
 |---|---|
 | `MechanicalLungPlatform/` | The platform sketch. Breathing presets `1` to `4` and steady flow `s1` to `s4` (10, 15, 20, 30 L/min) with their flow corrections, actuator in a 1 kHz timer interrupt, raw 100 Hz rows with read times. No plot mode or monitor messages: start-up sensor checks, rows and the `# config` reply only. Needs the `Sensirion Core` library (Library Manager; compiles with 0.7.3). |
 | `logger/mechlungdatalogger.py` | Drives the platform from the PC (Windows, Python 3 + pyserial): asks T, P and a queue, tares, runs each item, works out the figures and saves each run under `logger/runs/`. |
-| `MechLung_LeakTest/`, `MechLung_CorrectionFactorTest/`, `MechLung_SteadyStateTest/` | Finished leak and correction test sketches (plot mode, log mode with key L). |
+| `testing_phase/` | `MechLung_LeakTest`, `MechLung_CorrectionFactorTest` and `MechLung_SteadyStateTest`: finished leak and correction test sketches (plot mode, log mode with key L). |
+| `raw_results/` | Every logged run: samples, events and meta per item (see Raw results). |
+| `analysis/` | Scripts for the final report figures, tables and workbook (see `analysis/README.md`). |
 | `logger/leaktest.py` | Finished: the PC side of the test sketches. |
 | `breakouts/B1_serial_throughput/` | Serial throughput test and `b1_reader.py` (PC gap counter). |
 | `breakouts/B2_timer_dac/` | 1 kHz timer interrupt writing the DAC register directly. Disconnect the Jrk from A0 first. |
@@ -251,7 +253,7 @@ with one corrected run of each mode.
 ## Leak and correction tests (finished)
 
 `MechLung_LeakTest`, `MechLung_CorrectionFactorTest` and
-`MechLung_SteadyStateTest` with `leaktest.py`: plot mode (Arduino IDE Serial
+`MechLung_SteadyStateTest` (in `testing_phase/`) with `leaktest.py`: plot mode (Arduino IDE Serial
 Plotter, `PLOT_DIV`) and log mode (key L, raw rows
 `tick,breath,mode,cmd_dac,pot_raw,sfm_raw,p1_raw..p7_raw`), tare in the sketch,
 per-breath and per-stroke figures in both the sketch and the logger. To run
@@ -315,6 +317,21 @@ lag, pot and sensor noise) with `leaktest.py` over a pseudo-terminal: fit
 k 0.033 to 0.034 (true 0.034 L/min), n 0.80 to 0.81 (true 0.80); with a tighter
 seal (k x 0.18) the limit stopped `b4` and the fit from `b1` and `b3` was
 k 0.0059 (true 0.0060), n 0.80.
+
+## Raw results
+
+Logger output, one folder per item as described under Running the platform.
+
+| Path | Runs |
+|---|---|
+| `NON-MAD/NonMad_NewGain_FullSuite_1` to `_3` | 29 Oct, native model, dual-orifice, refitted gains. Used in the report. |
+| `NON-MAD/NonMad_NoseOnly_1` to `_3` | 30 Oct, native model, nose-only. Used in the report. In suite 3, presets 1 and 2 were restarted after flow sensor issues. |
+| `MAD/MAD_FullSuite_1` to `_3` | 30 Oct, MAD model, dual-orifice, after unblocking P4. Used in the report. |
+| `MAD/MAD_NoseOnly_1` to `_3` | 30 Oct, MAD model, nose-only. Used in the report. |
+| `NON-MAD/gaintests` | 29 Oct gain check, 6 breaths per preset. |
+| `NON-MAD/Old Gains/` | 28 and 29 Oct runs on the earlier gains. Superseded. |
+| `MAD/MAD_warmup_runs` | 30 Oct warm-up before the MAD suites. |
+| `MAD/P4BlockedRuns/` | 29 Oct MAD suites with tap P4 blocked. Do not use. |
 
 ## Status
 

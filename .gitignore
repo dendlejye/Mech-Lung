@@ -3,3 +3,4 @@ __pycache__/
 build/
 logger/runs/
 logger/last_conditions.json
+analysis/output/
